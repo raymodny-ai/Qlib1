@@ -1,0 +1,95 @@
+# ============================================================================
+# Kubernetes 配置与密钥管理
+# 对标 PRD 第5章: AES-256 加密 / TLS 1.2+ / 密钥轮换
+# ============================================================================
+
+---
+# ConfigMap — 系统配置 (非敏感)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qlib-system-config
+  namespace: qlib-vpc
+  labels:
+    app: qlib
+    component: config
+data:
+  environment: "production"
+  qlib_data_dir: "/data/qlib"
+  qlib_cache_dir: "/data/cache"
+  qlib_log_level: "WARNING"
+  tls_minimum_version: "TLSv1.2"
+  tls_policy: "strict"
+  audit_retention_days: "2557"
+  encryption_mode: "AES-256-GCM"
+  max_concurrent_train_jobs: "4"
+  feature_refresh_interval_hours: "24"
+  mlflow_tracking_uri: "http://mlflow-server.qlib-vpc.svc.cluster.local:5000"
+---
+# Secret — 敏感凭证 (仅内存，K8s etcd 加密)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: qlib-secrets
+  namespace: qlib-vpc
+  labels:
+    app: qlib
+    component: secrets
+    encryption: aes256
+    rotation-policy: "90d"
+type: Opaque
+stringData:
+  # ⚠️ 生产环境必须通过外部 Secret Manager (Vault/SealedSecrets) 注入
+  ENCRYPTION_KEY: "PLACEHOLDER_USE_VAULT_OR_SEALED_SECRETS"
+  DISK_ENCRYPTION_KEY: "PLACEHOLDER_USE_VAULT_OR_SEALED_SECRETS"
+  ALPHA_VANTAGE_API_KEY: "PLACEHOLDER_USE_VAULT_OR_SEALED_SECRETS"
+  EODHD_API_KEY: "PLACEHOLDER_USE_VAULT_OR_SEALED_SECRETS"
+  INTRINIO_API_KEY: "PLACEHOLDER_USE_VAULT_OR_SEALED_SECRETS"
+  HMAC_AUDIT_KEY: "PLACEHOLDER_USE_VAULT_OR_SEALED_SECRETS"
+  DB_PASSWORD: "PLACEHOLDER_USE_VAULT_OR_SEALED_SECRETS"
+---
+# RBAC — ServiceAccount (最小特权)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qlib-data-processor
+  namespace: qlib-vpc
+  labels:
+    app: qlib
+    role: data-processor
+  annotations:
+    qlib.io/permissions: "data:read,data:write,factor:execute"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qlib-model-trainer
+  namespace: qlib-vpc
+  labels:
+    app: qlib
+    role: model-trainer
+  annotations:
+    qlib.io/permissions: "model:read,model:train,experiment:submit"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qlib-api-gateway
+  namespace: qlib-dmz
+  labels:
+    app: qlib
+    role: api-gateway
+  annotations:
+    qlib.io/permissions: "report:read,data:read,signal:approve-proxy"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qlib-auditor
+  namespace: qlib-audit
+  labels:
+    app: qlib
+    role: compliance-auditor
+  annotations:
+    qlib.io/permissions: "audit:read,compliance:export,report:read"
+    qlib.io/read-only: "true"

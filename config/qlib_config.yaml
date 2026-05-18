@@ -1,0 +1,172 @@
+# ============================================================================
+# Qlib美股基本面量化分析系统 — 全局配置文件
+# ============================================================================
+
+# ===== 系统基础配置 =====
+system:
+  name: "Qlib US Fundamental Analysis System"
+  version: "0.1.0"
+  environment: "development"  # development | staging | production
+  log_level: "INFO"           # DEBUG | INFO | WARNING | ERROR
+  log_dir: "./logs"
+  timezone: "America/New_York"
+
+# ===== Qlib 核心数据层配置 =====
+qlib:
+  provider_uri: "./data/qlib_data/us_data"
+  cache:
+    enabled: true
+    provider: "memory"        # memory | redis
+    max_size_mb: 4096
+    ttl_seconds: 3600
+  expression_cache:
+    enabled: true
+    max_entries: 100000
+  dataset_cache:
+    enabled: true
+    max_entries: 500
+  cache_target_hit_rate: 0.80
+  auto_warmup: true
+  calendar:
+    provider: "local"
+    path: "./config/calendars/us_market.txt"
+  instruments:
+    provider: "local"
+    path: "./config/instruments/all_us_stocks.txt"
+
+# ===== 数据处理与特征工程 Pipeline =====
+data_handler:
+  handler_class: "DataHandlerLP"
+  process_pipeline:
+    - class: "DropnaLabel"
+      kwargs:
+        fields_group: "label"
+    - class: "Fillna"
+      kwargs:
+        strategy: "hybrid"
+        cross_sectional_group: "GICS_sector"
+        forward_fill_limit: 5
+    - class: "RobustZScoreNorm"
+      kwargs:
+        clip_threshold: 3.0
+        fields_group: "feature"
+    - class: "CSRankNorm"
+      kwargs:
+        fields_group: "feature"
+  dataset:
+    train_start: "2010-01-01"
+    train_end: "2019-12-31"
+    valid_start: "2020-01-01"
+    valid_end: "2021-12-31"
+    test_start: "2022-01-01"
+    test_end: "2024-12-31"
+
+# ===== 机器学习模型配置 =====
+models:
+  trainer:
+    class: "TrainerRM"
+    kwargs:
+      epochs: 200
+      early_stopping_rounds: 50
+      learning_rate: 0.001
+      weight_decay: 0.0001
+      gpu_id: 0
+  registry:
+    lightgbm:
+      class: "LightGBMModel"
+      kwargs:
+        loss: "mse"
+        num_leaves: 64
+        max_depth: 8
+        learning_rate: 0.05
+        n_estimators: 500
+        subsample: 0.8
+        colsample_bytree: 0.8
+        reg_alpha: 0.1
+        reg_lambda: 0.1
+        early_stopping_rounds: 50
+    xgboost:
+      class: "XGBoostModel"
+      kwargs:
+        objective: "reg:squarederror"
+        max_depth: 6
+        learning_rate: 0.05
+        n_estimators: 500
+        subsample: 0.8
+        colsample_bytree: 0.8
+        reg_alpha: 0.1
+        reg_lambda: 1.0
+        early_stopping_rounds: 50
+    double_ensemble:
+      class: "DoubleEnsembleModel"
+      kwargs:
+        base_models: ["lightgbm", "xgboost", "tabnet"]
+        fusion_strategy: "weighted_average"
+        ensemble_epochs: 50
+    adarnn:
+      class: "AdaRNNModel"
+      kwargs:
+        hidden_size: 64
+        num_layers: 2
+        dropout: 0.3
+        learning_rate: 0.001
+        batch_size: 256
+        seq_len: 60
+        distribution_matching_weight: 0.5
+    tabnet:
+      class: "TabNetModel"
+      kwargs:
+        n_d: 64
+        n_a: 64
+        n_steps: 5
+        gamma: 1.3
+        lambda_sparse: 0.001
+        learning_rate: 0.02
+        batch_size: 1024
+        virtual_batch_size: 128
+
+# ===== 投资组合策略配置 =====
+strategy:
+  topk_dropout:
+    class: "TopkDropoutStrategy"
+    kwargs:
+      topk: 30
+      n_drop: 5
+      hold_thresh: 3
+      buy_method: "equal_weight"
+      risk_control:
+        max_position_weight: 0.10
+        max_drawdown_threshold: -0.15
+        enable_drawdown_guard: true
+
+# ===== 回测引擎配置 =====
+backtest:
+  start_time: "2015-01-01"
+  end_time: "2024-12-31"
+  init_cash: 1000000.0
+  cost:
+    commission: 0.001
+    slippage: 0.0002
+    min_commission: 1.0
+  benchmark: "SPY"
+  report:
+    output_dir: "./reports"
+    formats: ["json", "html"]
+
+# ===== 精确度红线 =====
+accuracy_benchmarks:
+  rank_ic:
+    target_min: 0.045
+    target_max: 0.055
+    alert_threshold: 0.040
+  rank_icir:
+    target_min: 0.40
+    alert_threshold: 0.35
+  max_drawdown:
+    hard_limit: -0.15
+
+# ===== 性能基准 =====
+performance:
+  feature_assembly_time_s: 10
+  cache_hit_rate: 0.80
+  api_availability: 0.999

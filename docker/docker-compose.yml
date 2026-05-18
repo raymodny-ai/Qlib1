@@ -1,0 +1,135 @@
+version: "3.9"
+
+services:
+  # ===== Development Environment =====
+  dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: development
+    image: qlib-us-fundamental:dev
+    container_name: qlib-dev
+    hostname: qlib-dev
+    restart: unless-stopped
+
+    ports:
+      - "8888:8888"   # Jupyter Lab
+      - "8000:8000"   # FastAPI (optional in dev)
+
+    volumes:
+      - ..:/app                           # Live code sync
+      - dev-data:/app/data                # Qlib data persistence
+      - dev-models:/app/models            # Trained models persistence
+      - dev-logs:/app/logs                # Log files persistence
+
+    environment:
+      - ENVIRONMENT=development
+      - QLIB_DATA_DIR=/app/data/qlib_data
+      - QLIB_CACHE_DIR=/app/data/cache
+      - QLIB_LOG_LEVEL=INFO
+
+    env_file:
+      - ../.env
+
+    # GPU support (requires nvidia-container-toolkit)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ===== Production API Server =====
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: production
+    image: qlib-us-fundamental:prod
+    container_name: qlib-api
+    hostname: qlib-api
+    restart: always
+
+    ports:
+      - "443:8000"    # TLS-terminated by reverse proxy
+
+    volumes:
+      - prod-data:/app/data
+      - prod-models:/app/models
+      - prod-logs:/app/logs
+
+    environment:
+      - ENVIRONMENT=production
+      - QLIB_DATA_DIR=/app/data/qlib_data
+      - QLIB_CACHE_DIR=/app/data/cache
+      - QLIB_LOG_LEVEL=WARNING
+
+    env_file:
+      - ../.env
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ===== Scheduled Data Ingestion =====
+  data-ingestor:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: production
+    image: qlib-us-fundamental:prod
+    container_name: qlib-ingestor
+    hostname: qlib-ingestor
+    restart: always
+
+    command: ["python", "-m", "src.workflow.data_ingestion_pipeline"]
+
+    volumes:
+      - prod-data:/app/data
+      - prod-logs:/app/logs
+
+    environment:
+      - ENVIRONMENT=production
+      - QLIB_DATA_DIR=/app/data/qlib_data
+      - QLIB_LOG_LEVEL=INFO
+
+    env_file:
+      - ../.env
+
+    # NO ports exposed — internal service only
+    # NO GPU needed — data ingestion is CPU-bound
+
+# ===== Named Volumes =====
+volumes:
+  dev-data:
+    name: qlib-dev-data
+  dev-models:
+    name: qlib-dev-models
+  dev-logs:
+    name: qlib-dev-logs
+  prod-data:
+    name: qlib-prod-data
+  prod-models:
+    name: qlib-prod-models
+  prod-logs:
+    name: qlib-prod-logs

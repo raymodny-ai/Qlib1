@@ -1,0 +1,553 @@
+# ============================================================================
+# Kubernetes 微服务部署清单
+# ============================================================================
+
+# ============================================================
+#  DMZ 层 — API Gateway (唯一对外暴露的服务)
+#  PRD 5.1: DMZ 非军事化隔离区，执行严格的访问控制
+# ============================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qlib-api-gateway
+  namespace: qlib-dmz
+  labels:
+    app: qlib
+    component: api-gateway
+    security-tier: dmz
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: qlib
+      component: api-gateway
+  template:
+    metadata:
+      labels:
+        app: qlib
+        component: api-gateway
+        security-tier: dmz
+        tls-enforced: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        qlib.io/audit: "full"
+    spec:
+      serviceAccountName: qlib-api-gateway
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: api-gateway
+        image: qlib-us-fundamental:prod
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          name: https
+          protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: qlib-system-config
+        - secretRef:
+            name: qlib-secrets
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: TLS_ENABLED
+          value: "true"
+        - name: TLS_MIN_VERSION
+          value: "TLSv1.2"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "2000m"
+            memory: "2Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        volumeMounts:
+        - name: audit-logs
+          mountPath: /app/logs/audit
+        - name: tls-certs
+          mountPath: /etc/qlib/tls
+          readOnly: true
+      volumes:
+      - name: audit-logs
+        emptyDir: {}
+      - name: tls-certs
+        secret:
+          secretName: qlib-tls-cert
+          optional: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qlib-api-gateway
+  namespace: qlib-dmz
+  labels:
+    app: qlib
+    component: api-gateway
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: "arn:aws:acm:..."
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "https"
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 443
+    targetPort: 8000
+    protocol: TCP
+    name: https
+  selector:
+    app: qlib
+    component: api-gateway
+---
+# TLS Ingress
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: qlib-api-ingress
+  namespace: qlib-dmz
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-min-version: "TLSv1.2"
+    nginx.ingress.kubernetes.io/ssl-ciphers: "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - api.qlib.example.com
+    secretName: qlib-tls-cert
+  rules:
+  - host: api.qlib.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: qlib-api-gateway
+            port:
+              number: 443
+
+# ============================================================
+#  VPC 内网层 — 模型训练节点 (禁止外部访问)
+#  PRD 5.1: 核心工作节点部署在 VPC 深层隔离子网中
+# ============================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qlib-trainer
+  namespace: qlib-vpc
+  labels:
+    app: qlib
+    component: trainer
+    security-tier: vpc-internal
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # GPU 节点不支持热迁移
+  selector:
+    matchLabels:
+      app: qlib
+      component: trainer
+  template:
+    metadata:
+      labels:
+        app: qlib
+        component: trainer
+        security-tier: vpc-internal
+      annotations:
+        qlib.io/audit: "full"
+        qlib.io/encrypted-volume: "true"
+    spec:
+      serviceAccountName: qlib-model-trainer
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: trainer
+        image: qlib-us-fundamental:prod
+        imagePullPolicy: Always
+        command: ["python", "-m", "src.infrastructure.trainer"]
+        envFrom:
+        - configMapRef:
+            name: qlib-system-config
+        - secretRef:
+            name: qlib-secrets
+        resources:
+          requests:
+            cpu: "2000m"
+            memory: "4Gi"
+            nvidia.com/gpu: 1
+          limits:
+            cpu: "4000m"
+            memory: "16Gi"
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - name: models
+          mountPath: /app/models
+        - name: data
+          mountPath: /app/data
+        - name: experiments
+          mountPath: /app/experiments
+        - name: audit-logs
+          mountPath: /app/logs/audit
+      volumes:
+      - name: models
+        persistentVolumeClaim:
+          claimName: qlib-models-pvc
+      - name: data
+        persistentVolumeClaim:
+          claimName: qlib-data-pvc
+      - name: experiments
+        persistentVolumeClaim:
+          claimName: qlib-experiments-pvc
+      - name: audit-logs
+        emptyDir: {}
+
+# ============================================================
+#  VPC 内网层 — 定时数据采集 (CronJob)
+# ============================================================
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: qlib-data-ingestor
+  namespace: qlib-vpc
+  labels:
+    app: qlib
+    component: data-ingestor
+    security-tier: vpc-internal
+spec:
+  schedule: "0 2 * * 1-5"   # 每个交易日凌晨 2:00 EST
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: qlib
+            component: data-ingestor
+          annotations:
+            qlib.io/audit: "full"
+        spec:
+          serviceAccountName: qlib-data-processor
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          containers:
+          - name: data-ingestor
+            image: qlib-us-fundamental:prod
+            command: ["python", "-m", "src.workflow.data_ingestion_pipeline"]
+            envFrom:
+            - secretRef:
+                name: qlib-secrets
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "1Gi"
+              limits:
+                cpu: "2000m"
+                memory: "4Gi"
+            volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: audit-logs
+              mountPath: /app/logs/audit
+          volumes:
+          - name: data
+            persistentVolumeClaim:
+              claimName: qlib-data-pvc
+          - name: audit-logs
+            emptyDir: {}
+
+# ============================================================
+#  VPC 内网层 — 分析引擎 (特征工程 + Alpha因子 + 回测)
+# ============================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qlib-analyzer
+  namespace: qlib-vpc
+  labels:
+    app: qlib
+    component: analyzer
+    security-tier: vpc-internal
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: qlib
+      component: analyzer
+  template:
+    metadata:
+      labels:
+        app: qlib
+        component: analyzer
+        security-tier: vpc-internal
+      annotations:
+        qlib.io/audit: "full"
+    spec:
+      serviceAccountName: qlib-data-processor
+      containers:
+      - name: analyzer
+        image: qlib-us-fundamental:prod
+        imagePullPolicy: Always
+        command: ["python", "-m", "src.analyzers.ml_pipeline"]
+        envFrom:
+        - configMapRef:
+            name: qlib-system-config
+        - secretRef:
+            name: qlib-secrets
+        resources:
+          requests:
+            cpu: "1000m"
+            memory: "2Gi"
+          limits:
+            cpu: "4000m"
+            memory: "8Gi"
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+        - name: models
+          mountPath: /app/models
+        - name: audit-logs
+          mountPath: /app/logs/audit
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: qlib-data-pvc
+      - name: models
+        persistentVolumeClaim:
+          claimName: qlib-models-pvc
+      - name: audit-logs
+        emptyDir: {}
+
+# ============================================================
+#  VPC 内网层 — 数据服务 (内部特征数据访问)
+# ============================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qlib-data-server
+  namespace: qlib-vpc
+  labels:
+    app: qlib
+    component: data-server
+    security-tier: vpc-internal
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: qlib
+      component: data-server
+  template:
+    metadata:
+      labels:
+        app: qlib
+        component: data-server
+        security-tier: vpc-internal
+    spec:
+      containers:
+      - name: data-server
+        image: qlib-us-fundamental:prod
+        command: ["python", "-m", "src.infrastructure.data_server"]
+        ports:
+        - containerPort: 9100
+          name: data-grpc
+        envFrom:
+        - configMapRef:
+            name: qlib-system-config
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "2000m"
+            memory: "4Gi"
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: qlib-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qlib-data-server
+  namespace: qlib-vpc
+  labels:
+    app: qlib
+    component: data-server
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless service
+  ports:
+  - port: 9100
+    targetPort: 9100
+    protocol: TCP
+    name: data-grpc
+  selector:
+    app: qlib
+    component: data-server
+
+# ============================================================
+#  持久卷声明 (AES-256 加密卷)
+# ============================================================
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qlib-data-pvc
+  namespace: qlib-vpc
+  labels:
+    app: qlib
+    encryption: aes256
+  annotations:
+    qlib.io/encryption-key-ref: "DISK_ENCRYPTION_KEY"
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 500Gi
+  storageClassName: encrypted-ssd
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qlib-models-pvc
+  namespace: qlib-vpc
+  labels:
+    app: qlib
+    encryption: aes256
+  annotations:
+    qlib.io/encryption-key-ref: "DISK_ENCRYPTION_KEY"
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: encrypted-ssd
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qlib-experiments-pvc
+  namespace: qlib-vpc
+  labels:
+    app: qlib
+    encryption: aes256
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: encrypted-ssd
+
+# ============================================================
+#  审计独立区 — 合规审计服务 (完全隔离，只读)
+#  PRD 5.2: 审计日志归档至独立存储
+# ============================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qlib-audit-server
+  namespace: qlib-audit
+  labels:
+    app: qlib
+    component: audit-server
+    security-tier: audit-isolated
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qlib
+      component: audit-server
+  template:
+    metadata:
+      labels:
+        app: qlib
+        component: audit-server
+        security-tier: audit-isolated
+      annotations:
+        qlib.io/read-only: "true"
+    spec:
+      serviceAccountName: qlib-auditor
+      containers:
+      - name: audit-server
+        image: qlib-us-fundamental:prod
+        command: ["python", "-c", "from src.security.compliance import SOXComplianceReporter; print('Audit ready')"]
+        # 实际部署: 运行合规报告生成服务
+        envFrom:
+        - configMapRef:
+            name: qlib-system-config
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "2Gi"
+        volumeMounts:
+        - name: audit-archive
+          mountPath: /app/archive/audit
+      volumes:
+      - name: audit-archive
+        persistentVolumeClaim:
+          claimName: qlib-audit-archive-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qlib-audit-archive-pvc
+  namespace: qlib-audit
+  labels:
+    app: qlib
+    retention: sox-7yr
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 200Gi
+  storageClassName: encrypted-ssd

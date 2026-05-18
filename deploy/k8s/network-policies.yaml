@@ -1,0 +1,186 @@
+# ============================================================================
+# Kubernetes 网络策略 — 微隔离 (Micro-Segmentation)
+# 对标 PRD 5.1: 深度网络微隔离与攻击面收敛
+# VPC 内网节点严禁出站互联网，DMZ 严格限制入站
+# ============================================================================
+
+# ============================================================
+#  DMZ 区域网络策略: 仅允许外部 HTTPS 入站
+# ============================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dmz-ingress-only
+  namespace: qlib-dmz
+spec:
+  podSelector:
+    matchLabels:
+      security-tier: dmz
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # 允许外部 LoadBalancer/Ingress 入站
+  - from:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8       # 阻止内部地址伪装
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    ports:
+    - protocol: TCP
+      port: 443
+  egress:
+  # DMZ→VPC: 仅允许 API Gateway → VPC 内部服务
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          security-tier: vpc-internal
+      podSelector:
+        matchLabels:
+          component: data-server
+    ports:
+    - protocol: TCP
+      port: 9100
+  # DMZ→Audit: 写入审计日志
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          security-tier: audit-isolated
+    ports:
+    - protocol: TCP
+      port: 9090
+  # DNS 解析 (kube-dns)
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+
+# ============================================================
+#  VPC 内网策略: 禁止所有出站互联网访问
+#  PRD 5.1: 核心工作节点无法直接连接外网
+# ============================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vpc-no-internet-egress
+  namespace: qlib-vpc
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  # 仅允许集群内通信
+  - to:
+    - namespaceSelector: {}
+    - podSelector: {}
+  # DNS (kube-dns only)
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  # 明确拒绝所有其他出站 (默认拒绝)
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vpc-intra-service-rules
+  namespace: qlib-vpc
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  # VPC 内部服务间互访
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          security-tier: vpc-internal
+    ports:
+    - protocol: TCP
+      port: 9100   # Data Server gRPC
+  # DMZ→VPC 允许 (API Gateway → Data Server)
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          security-tier: dmz
+      podSelector:
+        matchLabels:
+          component: api-gateway
+    ports:
+    - protocol: TCP
+      port: 9100
+
+# ============================================================
+#  审计区网络策略: 完全物理隔离，仅集群内出站
+# ============================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: audit-isolation
+  namespace: qlib-audit
+spec:
+  podSelector:
+    matchLabels:
+      security-tier: audit-isolated
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # 仅允许 DMZ Gateway 写入审计日志
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          security-tier: dmz
+    ports:
+    - protocol: TCP
+      port: 9090
+  egress:
+  # 仅集群内通信，严禁外网
+  - to:
+    - namespaceSelector: {}
+    - podSelector: {}
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+
+# ============================================================
+#  全局默认拒绝策略 (零信任基线)
+# ============================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: qlib-vpc
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  # 空规则 = 默认拒绝所有 (需配合上方的 allow 规则)
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: qlib-audit
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress

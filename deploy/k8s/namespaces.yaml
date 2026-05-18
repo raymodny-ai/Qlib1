@@ -1,0 +1,41 @@
+# ============================================================================
+# Kubernetes 部署清单 — Namespace 隔离
+# 对标 PRD 第7章 K8s 部署 + 第5章 VPC/DMZ 网络隔离
+# ============================================================================
+
+---
+# DMZ 隔离区 — 仅部署 API Gateway，对外暴露
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qlib-dmz
+  labels:
+    security-tier: dmz
+    compliance: sox
+    encryption: aes256-enabled
+---
+# VPC 内网区 — 核心计算节点，禁止出站互联网访问
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qlib-vpc
+  labels:
+    security-tier: vpc-internal
+    compliance: sox
+    encryption: aes256-enabled
+  annotations:
+    qlib.io/no-egress: "true"
+    qlib.io/audit-level: "full"
+---
+# 独立审计区 — 合规审计系统，物理隔离
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qlib-audit
+  labels:
+    security-tier: audit-isolated
+    compliance: sox
+    encryption: aes256-enabled
+  annotations:
+    qlib.io/read-only: "true"
+    qlib.io/audit-level: "forensic"

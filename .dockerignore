@@ -1,0 +1,31 @@
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Virtual Environment
+venv/
+.env
+
+# Data (mounted as volumes)
+data/
+models/*.pkl
+models/*.pt
+
+# Logs
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker/.docker/
