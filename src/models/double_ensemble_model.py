@@ -23,9 +23,9 @@ DoubleEnsemble 双层集成模型
 - 自动处理模型异质性 (CPU/GPU, tree-based/deep)
 
 使用示例:
-    from src.analyzers.double_ensemble_model import DoubleEnsembleModel
+    from src.models.double_ensemble_model import DoubleEnsembleModel
+    from src.models.tabnet_model import TabNetModel
     from src.analyzers.ml_pipeline import LightGBMModel, XGBoostModel
-    from src.analyzers.tabnet_model import TabNetModel
 
     ensemble = DoubleEnsembleModel(
         base_models=[
@@ -339,23 +339,28 @@ class DoubleEnsembleModel(BaseForecastModel):
     # ================================================================
 
     def save(self, path: str):
-        """保存集成模型 (各基础模型独立保存)"""
+        """保存集成模型 (各基础模型独立保存, 记录完整类路径)"""
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         import pickle
 
         base_path = path.replace(".pkl", "")
         base_model_paths = []
+        base_model_classes = []  # 记录每个基础模型的完整类路径
 
         for i, model in enumerate(self._base_models):
             model_path = f"{base_path}_base_{i}.pkl"
             model.save(model_path)
             base_model_paths.append(model_path)
+            # 记录完整类路径: module.ClassName
+            cls = type(model)
+            base_model_classes.append(f"{cls.__module__}.{cls.__name__}")
 
         data = {
             "params": self.params,
             "feature_names": self._feature_names,
             "weights": self._weights.tolist() if len(self._weights) > 0 else [],
             "model_names": self._model_names,
+            "base_model_classes": base_model_classes,
             "base_model_paths": base_model_paths,
             "fitted": self._fitted,
         }
@@ -365,7 +370,13 @@ class DoubleEnsembleModel(BaseForecastModel):
         self.logger.info("DoubleEnsemble 模型已保存", path=path)
 
     def load(self, path: str):
-        """加载集成模型"""
+        """
+        加载集成模型
+
+        通过 importlib 动态重建正确的基础模型类型，
+        解决之前硬编码遍历顺序导致的 TabNet/AdaRNN 静默降级 Bug。
+        """
+        import importlib
         import pickle
 
         with open(path, "rb") as f:
@@ -376,41 +387,63 @@ class DoubleEnsembleModel(BaseForecastModel):
         self._weights = np.array(data.get("weights", []))
         self._model_names = data.get("model_names", [])
         self._fitted = data.get("fitted", False)
+        self._base_models = []
 
         base_model_paths = data.get("base_model_paths", [])
-        for model_path in base_model_paths:
-            if os.path.exists(model_path):
-                try:
-                    with open(model_path, "rb") as f2:
-                        model_data = pickle.load(f2)
-                    # 重建模型
-                    model_cls = BaseForecastModel.MODEL_REGISTRY.get(
-                        self._model_names[len(self._base_models)] if len(self._base_models) < len(self._model_names) else "lightgbm"
-                    )
-                    if model_cls is None:
-                        from src.analyzers.ml_pipeline import LightGBMModel
-                        model_cls = LightGBMModel
-                    # 简单重建 (子类自行负责完整 load)
-                except Exception:
-                    continue
+        base_model_classes = data.get("base_model_classes", [])
 
-        # 尝试逐个加载基础模型
-        for model_path in base_model_paths:
+        for i, model_path in enumerate(base_model_paths):
             if not os.path.exists(model_path):
+                self.logger.warning(f"基础模型文件不存在: {model_path}")
                 continue
-            for model_cls_name in ["lightgbm", "xgboost", "tabnet", "adarnn"]:
-                try:
-                    model_cls = BaseForecastModel.MODEL_REGISTRY.get(model_cls_name)
-                    if model_cls is None:
-                        continue
-                    model = model_cls()
-                    model.load(model_path)
-                    self._base_models.append(model)
-                    break
-                except Exception:
-                    continue
 
-        self.logger.info("DoubleEnsemble 模型已加载", path=path)
+            # 通过完整类路径动态重建正确的模型类
+            model_cls = None
+
+            # 优先使用保存的完整类路径
+            if i < len(base_model_classes):
+                cls_path = base_model_classes[i]
+                try:
+                    module_name, class_name = cls_path.rsplit(".", 1)
+                    module = importlib.import_module(module_name)
+                    model_cls = getattr(module, class_name, None)
+                except Exception as e:
+                    self.logger.warning(f"无法从类路径加载 {cls_path}: {e}")
+
+            # 降级: 尝试 MODEL_REGISTRY
+            if model_cls is None and i < len(self._model_names):
+                model_cls = BaseForecastModel.MODEL_REGISTRY.get(
+                    self._model_names[i]
+                ) or BaseForecastModel.MODEL_REGISTRY.get(
+                    self._model_names[i].lower().replace("model", "")
+                )
+
+            # 最终降级: 遍历注册表找匹配
+            if model_cls is None and i < len(self._model_names):
+                target = self._model_names[i].lower().replace("model", "")
+                for key, cls in BaseForecastModel.MODEL_REGISTRY.items():
+                    if target in key.lower():
+                        model_cls = cls
+                        break
+
+            if model_cls is None:
+                self.logger.error(f"无法找到模型类: {self._model_names[i] if i < len(self._model_names) else 'unknown'}")
+                continue
+
+            try:
+                model = model_cls()
+                model.load(model_path)
+                self._base_models.append(model)
+                self.logger.info(f"基础模型已加载 [{i}]: {type(model).__name__}")
+            except Exception as e:
+                self.logger.error(f"模型加载失败 [{model_path}]: {e}")
+
+        self.logger.info(
+            "DoubleEnsemble 模型已加载",
+            path=path,
+            models_loaded=len(self._base_models),
+            expected=len(base_model_paths),
+        )
 
     # ================================================================
     #  便利属性

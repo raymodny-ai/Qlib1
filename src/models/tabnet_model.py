@@ -25,7 +25,7 @@ TabNet 深度表格模型
 - GPU 加速 (自动检测 CUDA)
 
 使用示例:
-    from src.analyzers.tabnet_model import TabNetModel
+    from src.models.tabnet_model import TabNetModel
 
     model = TabNetModel(
         input_dim=200,

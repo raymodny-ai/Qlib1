@@ -23,7 +23,7 @@ AdaRNN 自适应循环神经网络模型
 - GPU 加速 (自动检测 CUDA)
 
 使用示例:
-    from src.analyzers.adarnn_model import AdaRNNModel
+    from src.models.adarnn_model import AdaRNNModel
 
     model = AdaRNNModel(
         input_dim=64,

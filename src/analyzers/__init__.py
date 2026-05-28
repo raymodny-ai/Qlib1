@@ -27,9 +27,9 @@ from src.analyzers.ml_pipeline import (
     PredictionResult,
 )
 
-from src.analyzers.adarnn_model import AdaRNNModel
-from src.analyzers.tabnet_model import TabNetModel
-from src.analyzers.double_ensemble_model import DoubleEnsembleModel
+from src.models.adarnn_model import AdaRNNModel
+from src.models.tabnet_model import TabNetModel
+from src.models.double_ensemble_model import DoubleEnsembleModel
 
 from src.analyzers.portfolio_strategy import (
     BaseStrategy,

@@ -17,6 +17,7 @@ RESTful API 微服务层
     uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 """
 
+import asyncio
 import json
 import time
 import uuid
@@ -452,7 +453,11 @@ async def query_factors(dataset: str, query: FactorQuery):
 
 
 @app.post("/api/v1/predict", response_model=PredictResponse, tags=["Prediction"])
-async def predict(request: PredictRequest):
+async def predict(
+    request: PredictRequest,
+    user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("model:read")),
+):
     """
     模型预测
 
@@ -603,7 +608,11 @@ async def get_portfolio(
 
 
 @app.post("/api/v1/backtest", response_model=BacktestStatus, tags=["Backtest"])
-async def run_backtest(request: BacktestRequest):
+async def run_backtest(
+    request: BacktestRequest,
+    user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("experiment:submit")),
+):
     """
     提交回测任务
 
@@ -719,7 +728,10 @@ async def run_backtest(request: BacktestRequest):
             strategy=strategy,
             initial_capital=request.initial_capital,
         )
-        result = simulator.run(predictions, prices)
+
+        # 异步卸载到线程池，避免阻塞事件循环
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, simulator.run, predictions, prices)
 
         _backtest_tasks[task_id] = {
             "status": "completed",
@@ -782,7 +794,11 @@ async def get_backtest_status(task_id: str):
     response_model=ReportResponse,
     tags=["Report"],
 )
-async def get_report(experiment_id: str):
+async def get_report(
+    experiment_id: str,
+    user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("report:read")),
+):
     """
     查询实验绩效报告
 

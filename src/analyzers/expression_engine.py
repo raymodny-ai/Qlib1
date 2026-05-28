@@ -193,6 +193,92 @@ _BUILTIN_FUNCTIONS: Dict[str, Callable] = {
 }
 
 
+# ===== AST 安全沙箱 =====
+
+# 白名单: 允许的 AST 节点类型
+_ALLOWED_AST_NODES_SET = {
+    ast.Expression,      # 根节点
+    ast.Constant,        # 字面量 (3.14, 42, "hello")
+    ast.Name,            # 变量引用 ($field → _F_field)
+    ast.Load,            # 变量加载上下文
+    ast.BinOp,           # 二元运算: + - * / **
+    ast.UnaryOp,         # 一元运算: - +
+    ast.BoolOp,          # 逻辑运算: And / Or
+    ast.Not,             # 逻辑非
+    ast.Compare,         # 比较: > < >= <= == !=
+    ast.Call,            # 函数调用 (仅限白名单函数)
+    ast.IfExp,           # 三元条件 If(test, a, b)
+    ast.Add,             # +
+    ast.Sub,             # -
+    ast.Mult,            # *
+    ast.Div,             # /
+    ast.Pow,             # **
+    ast.USub,            # 一元负号
+    ast.UAdd,            # 一元正号
+    ast.Gt,              # >
+    ast.Lt,              # <
+    ast.GtE,             # >=
+    ast.LtE,             # <=
+    ast.Eq,              # ==
+    ast.NotEq,           # !=
+    ast.And,             # and
+    ast.Or,              # or
+    ast.keyword,         # 函数关键字参数
+    ast.Attribute,       # 属性访问 (.mean, .sum 等 — 仅限字段引用)
+}
+
+_ALLOWED_AST_NODES = frozenset(_ALLOWED_AST_NODES_SET)
+
+# 明确禁止的危险节点 (即使不在白名单中也显式阻断)
+_DANGEROUS_NODES = frozenset({
+    ast.Subscript,       # obj[key] — 禁止下标访问
+    ast.Lambda,          # lambda — 禁止动态函数
+    ast.ListComp,        # 列表推导 — 潜在 DoS
+    ast.SetComp,         # 集合推导
+    ast.DictComp,        # 字典推导
+    ast.GeneratorExp,    # 生成器表达式
+    ast.Yield,           # yield
+    ast.YieldFrom,       # yield from
+    ast.Await,           # await
+    ast.NamedExpr,       # := 海象运算符
+    ast.Starred,         # *args 解包
+    ast.Delete,          # del
+    ast.Slice,           # 切片 (可能导致序列访问)
+})
+
+
+class ASTSandboxError(ValueError):
+    """AST 安全沙箱拒绝表达式"""
+    pass
+
+
+class ASTSandbox(ast.NodeVisitor):
+    """
+    AST 白名单沙箱遍历器
+
+    仅允许白名单中定义的 AST 节点类型通过。
+    任何危险节点或不在白名单中的节点都会触发拒绝。
+    """
+
+    def visit(self, node: ast.AST):
+        node_type = type(node)
+
+        # 检查危险节点
+        if node_type in _DANGEROUS_NODES:
+            raise ASTSandboxError(
+                f"表达式含禁止语法: {node_type.__name__}"
+            )
+
+        # 检查白名单
+        if node_type not in _ALLOWED_AST_NODES:
+            raise ASTSandboxError(
+                f"表达式含未授权语法: {node_type.__name__}"
+            )
+
+        # 递归检查子节点
+        self.generic_visit(node)
+
+
 # ===== 表达式编译器 =====
 
 @dataclass
@@ -218,13 +304,16 @@ class ExpressionCompiler:
 
     def compile(self, expression: str) -> CompiledExpression:
         """
-        编译表达式字符串
+        编译表达式字符串 (含 AST 安全沙箱验证)
 
         Args:
             expression: 如 "$close / Ref($close, 5) - 1"
 
         Returns:
             CompiledExpression
+
+        Raises:
+            ASTSandboxError: 表达式包含危险语法
         """
         # 预处理: 替换 $field 为合法的 Python 变量名
         fields = set()
@@ -241,6 +330,17 @@ class ExpressionCompiler:
         except SyntaxError as e:
             self.logger.error("表达式语法错误", expression=expression, error=str(e))
             raise ValueError(f"表达式语法错误: {e}") from e
+
+        # AST 安全沙箱验证
+        try:
+            ASTSandbox().visit(tree)
+        except ASTSandboxError as e:
+            self.logger.error(
+                "表达式安全沙箱拒绝",
+                expression=expression[:100],
+                reason=str(e),
+            )
+            raise
 
         # 提取函数引用
         functions = set()

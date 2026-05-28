@@ -101,6 +101,35 @@ class BaseForecastModel(ABC):
         self._fitted = False
         self._feature_names: List[str] = []
         self.logger = get_logger()
+        self._encryptor = None  # 惰性初始化 AES-256 加密器
+
+    def _get_encryptor(self):
+        """
+        获取 AES-256-GCM 加密器 (PRD 5.1: 模型权重静态存储透明加密)
+
+        仅在环境变量 ENCRYPTION_KEY 已设置时启用。
+        子类可用此方法在自定义 save/load 中统一加密。
+        """
+        if self._encryptor is None:
+            import os
+            if os.environ.get("ENCRYPTION_KEY"):
+                from src.security.security import AES256Encryptor
+                self._encryptor = AES256Encryptor(key_env="ENCRYPTION_KEY")
+        return self._encryptor
+
+    def _encrypt_bytes(self, data: bytes) -> bytes:
+        """加密二进制数据 (若加密器可用)"""
+        encryptor = self._get_encryptor()
+        if encryptor:
+            return encryptor.encrypt(data)
+        return data
+
+    def _decrypt_bytes(self, data: bytes) -> bytes:
+        """解密二进制数据 (若加密器可用)"""
+        encryptor = self._get_encryptor()
+        if encryptor:
+            return encryptor.decrypt(data)
+        return data
 
     @abstractmethod
     def fit(
@@ -128,26 +157,35 @@ class BaseForecastModel(ABC):
         return {}
 
     def save(self, path: str):
-        """保存模型到磁盘"""
+        """保存模型到磁盘 (AES-256-GCM 透明加密)"""
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         data = {
             "model": self._model,
             "params": self.params,
             "feature_names": self._feature_names,
         }
+        import io
+        buf = io.BytesIO()
+        pickle.dump(data, buf)
+        raw = buf.getvalue()
+        encrypted = self._encrypt_bytes(raw)
         with open(path, "wb") as f:
-            pickle.dump(data, f)
-        self.logger.info("模型已保存", path=path)
+            f.write(encrypted)
+        self.logger.info("模型已保存", path=path, encrypted=bool(self._get_encryptor()))
 
     def load(self, path: str):
-        """从磁盘加载模型"""
+        """从磁盘加载模型 (AES-256-GCM 透明解密)"""
         with open(path, "rb") as f:
-            data = pickle.load(f)
+            encrypted = f.read()
+        raw = self._decrypt_bytes(encrypted)
+        import io
+        buf = io.BytesIO(raw)
+        data = pickle.load(buf)
         self._model = data["model"]
         self.params = data.get("params", {})
         self._feature_names = data.get("feature_names", [])
         self._fitted = True
-        self.logger.info("模型已加载", path=path)
+        self.logger.info("模型已加载", path=path, encrypted=bool(self._get_encryptor()))
 
     @staticmethod
     def create(model_type: str, **params) -> "BaseForecastModel":
