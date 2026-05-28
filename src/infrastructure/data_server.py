@@ -389,3 +389,21 @@ class DataServer:
     def clear_cache(self):
         if self.cache:
             self.cache.clear()
+
+
+# ========================================================================
+#  K8s 入口点: python -m src.infrastructure.data_server
+# ========================================================================
+
+if __name__ == "__main__":
+    import sys
+
+    print("DataServer 启动中...")
+    server = DataServer()
+    server.warmup()
+    stats = server.stats
+    print(f"证券数: {stats.get('instruments', 0)}")
+    print(f"预热状态: {stats.get('warmed_up', False)}")
+    print(f"缓存状态: {stats.get('cache', {})}")
+    print("DataServer 就绪")
+    sys.exit(0)

@@ -459,3 +459,19 @@ class TrainerDispatcher:
             "gpu_available": self.gpu_pool.available_count,
             "checkpoints": self.checkpoint_manager.list_checkpoints(),
         }
+
+
+# ========================================================================
+#  K8s 入口点: python -m src.infrastructure.trainer
+# ========================================================================
+
+if __name__ == "__main__":
+    import sys
+
+    print("TrainerDispatcher 运行中...")
+    trainer = TrainerDispatcher()
+    print(f"GPU 状态: {trainer.gpu_pool.devices_info}")
+    print(f"可用 GPU: {trainer.gpu_pool.available_count}")
+    print(f"Checkpoints: {trainer.checkpoint_manager.list_checkpoints()}")
+    print("Trainer 就绪，等待任务调度...")
+    sys.exit(0)

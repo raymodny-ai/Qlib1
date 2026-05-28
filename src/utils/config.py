@@ -60,17 +60,35 @@ class ConfigLoader:
         self._apply_env_overrides()
 
     def _apply_env_overrides(self) -> None:
-        """应用环境变量覆盖 YAML 配置"""
+        """应用环境变量覆盖 YAML 配置 (覆盖 .env.example 全部 12+ 键)"""
         env_mappings = {
+            # Qlib 核心
             "QLIB_DATA_DIR": "qlib.provider_uri",
             "QLIB_CACHE_DIR": "qlib.cache",
             "QLIB_LOG_LEVEL": "system.log_level",
             "ENVIRONMENT": "system.environment",
+            "DEBUG": "system.debug",
+            # API Keys (数据源)
+            "ALPHA_VANTAGE_API_KEY": "collectors.alpha_vantage.api_key",
+            "EODHD_API_KEY": "collectors.eodhd.api_key",
+            "INTRINIO_API_KEY": "collectors.intrinio.api_key",
+            "SEC_EDGAR_USER_AGENT": "collectors.sec_edgar.user_agent",
+            # 数据库
+            "DATABASE_URL": "database.url",
+            # 安全
+            "AES_ENCRYPTION_KEY": "security.encryption.aes_key",
+            "JWT_SECRET_KEY": "security.jwt.secret_key",
+            # 可选: Redis / Celery
+            "REDIS_URL": "queue.redis.url",
+            "CELERY_BROKER_URL": "queue.celery.broker_url",
         }
 
         for env_key, config_path in env_mappings.items():
             env_value = os.getenv(env_key)
-            if env_value:
+            if env_value is not None:
+                # 类型转换
+                if env_key == "DEBUG":
+                    env_value = env_value.lower() in ("true", "1", "yes")
                 self._set_nested(config_path, env_value)
 
     def _set_nested(self, path: str, value: Any) -> None:

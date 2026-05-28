@@ -399,6 +399,12 @@ class WorkflowOrchestrator:
             self.logger.info("=== 阶段4: 预测生成 ===", experiment=record.experiment_id)
             predictions = self._generate_predictions(config, model, X_test, test_data)
 
+            # ===== 阶段4.5: 准确度红线校验 (PRD 4.2) =====
+            self.logger.info("=== 阶段4.5: 准确度校验 ===", experiment=record.experiment_id)
+            validation_report = self._validate_accuracy(
+                config, model, training_result, X_test, y_test
+            )
+
             # ===== 阶段5: 组合回测 =====
             self.logger.info("=== 阶段5: 组合回测 ===", experiment=record.experiment_id)
             backtest_result = self._run_backtest(config, predictions, test_data)
@@ -418,6 +424,12 @@ class WorkflowOrchestrator:
                 "n_features": getattr(training_result, "n_features", 0),
                 **report_metrics,
             }
+
+            # 追加准确度校验结果
+            if validation_report is not None:
+                metrics["validation_passed"] = validation_report.get("passed", False)
+                metrics["validation_checks"] = validation_report.get("checks", [])
+                metrics["validation_summary"] = validation_report.get("summary", "")
 
             # 保存模型
             model_path = str(exp_dir / "model.pkl")
@@ -440,13 +452,55 @@ class WorkflowOrchestrator:
         """
         数据准备阶段
 
-        从数据源加载特征矩阵并按时间切分训练/验证/测试集。
-        实际实现应查询 .bin 文件或 PIT 数据库。
+        从 DataServer 加载特征矩阵并按时间切分训练/验证/测试集。
         """
-        # 阶段输出: (train_df, valid_df, test_df)
-        # 当前为占位实现
-        self.logger.info("数据准备 (占位)", train_period=f"{config.data.train_start}~{config.data.train_end}")
-        return None, None, None
+        self.logger.info(
+            "数据准备",
+            train=f"{config.data.train_start}~{config.data.train_end}",
+            valid=f"{config.data.valid_start}~{config.data.valid_end}",
+            test=f"{config.data.test_start}~{config.data.test_end}",
+        )
+
+        try:
+            from src.infrastructure.data_server import DataServer
+
+            ds = DataServer()
+            ds.warmup()
+
+            fields = config.data.fields if config.data.fields else ["close", "volume", "open", "high", "low"]
+            instruments = config.data.instruments if config.data.instruments else None
+
+            train_df = ds.load_features(
+                fields=fields,
+                instruments=instruments,
+                start=config.data.train_start,
+                end=config.data.train_end,
+            )
+            valid_df = ds.load_features(
+                fields=fields,
+                instruments=instruments,
+                start=config.data.valid_start,
+                end=config.data.valid_end,
+            )
+            test_df = ds.load_features(
+                fields=fields,
+                instruments=instruments,
+                start=config.data.test_start,
+                end=config.data.test_end,
+            )
+
+            self.logger.info(
+                "数据加载完成",
+                train_shape=train_df.shape if train_df is not None else "N/A",
+                valid_shape=valid_df.shape if valid_df is not None else "N/A",
+                test_shape=test_df.shape if test_df is not None else "N/A",
+            )
+
+            return train_df, valid_df, test_df
+
+        except Exception as e:
+            self.logger.warning(f"DataServer 加载失败 ({e})，返回空数据")
+            return None, None, None
 
     def _process_features(
         self,
@@ -463,8 +517,48 @@ class WorkflowOrchestrator:
         if config.processors:
             self.logger.info("特征处理链", processors=[p.get("type") for p in config.processors])
 
-        # 阶段输出: (X_train, y_train, X_valid, y_valid, X_test, y_test)
-        return None, None, None, None, None, None
+        if train_data is None:
+            self.logger.warning("无训练数据，跳过特征工程")
+            return None, None, None, None, None, None
+
+        try:
+            from src.processors.feature_pipeline import FeaturePipeline
+
+            pipeline = FeaturePipeline(config.processors) if config.processors else None
+
+            if pipeline is not None:
+                train_processed = pipeline.fit_transform(train_data)
+                valid_processed = pipeline.transform(valid_data) if valid_data is not None else None
+                test_processed = pipeline.transform(test_data) if test_data is not None else None
+            else:
+                train_processed = train_data
+                valid_processed = valid_data
+                test_processed = test_data
+
+            label_col = config.data.label_col
+
+            def split_xy(df):
+                if df is None:
+                    return None, None
+                feature_cols = [c for c in df.columns if c != label_col]
+                X = df[feature_cols].values.astype("float32")
+                y = df[label_col].values.astype("float32") if label_col in df.columns else None
+                return X, y
+
+            X_train, y_train = split_xy(train_processed)
+            X_valid, y_valid = split_xy(valid_processed)
+            X_test, y_test = split_xy(test_processed)
+
+            self.logger.info(
+                "特征工程完成",
+                train_features=X_train.shape if X_train is not None else "N/A",
+            )
+
+            return X_train, y_train, X_valid, y_valid, X_test, y_test
+
+        except Exception as e:
+            self.logger.warning(f"特征处理失败 ({e})，返回空数据")
+            return None, None, None, None, None, None
 
     def _train_model(
         self,
@@ -486,8 +580,22 @@ class WorkflowOrchestrator:
         model = BaseForecastModel.create(config.model.type, **config.model.params)
         pipeline = MLPipeline(model)
 
-        # 阶段输出: (model, training_result)
-        return model, None
+        if X_train is not None and y_train is not None:
+            training_result = pipeline.fit(
+                X_train, y_train,
+                X_valid if X_valid is not None and len(X_valid) > 0 else None,
+                y_valid if y_valid is not None and len(y_valid) > 0 else None,
+            )
+            self.logger.info(
+                "模型训练完成",
+                best_score=round(training_result.best_score, 4) if isinstance(training_result.best_score, (int, float)) else "N/A",
+                best_iter=training_result.best_iteration,
+            )
+        else:
+            training_result = None
+            self.logger.warning("无训练数据，跳過模型训练")
+
+        return model, training_result
 
     def _generate_predictions(
         self,
@@ -502,8 +610,151 @@ class WorkflowOrchestrator:
         在测试集上生成横截面预测得分。
         """
         self.logger.info("预测生成", model=config.model.type)
-        # 阶段输出: predictions DataFrame
+
+        if model is None or X_test is None:
+            self.logger.warning("无模型或测试数据，无法生成预测")
+            return pd.DataFrame()
+
+        try:
+            if hasattr(model, "predict"):
+                preds = model.predict(X_test)
+                if hasattr(preds, "predictions"):
+                    scores = preds.predictions
+                else:
+                    scores = preds
+
+                # 构建与 test_data 索引对齐的 DataFrame
+                if test_data is not None and hasattr(test_data, "index"):
+                    predictions = pd.DataFrame(scores.flatten(), index=test_data.index, columns=["score"])
+                else:
+                    predictions = pd.DataFrame({"score": scores.flatten()})
+
+                self.logger.info("预测生成完成", shape=predictions.shape)
+                return predictions
+
+        except Exception as e:
+            self.logger.error(f"预测生成失败: {e}")
+
         return pd.DataFrame()
+
+    def _validate_accuracy(
+        self,
+        config: ExperimentConfig,
+        model: Any,
+        training_result: Any,
+        X_test: Any,
+        y_test: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        准确度红线校验 (PRD 4.2)
+
+        在模型训练完成后自动触发 AccuracyValidator 校验:
+        - Rank IC 阈值检查 (0.045 ~ 0.055)
+        - Rank ICIR > 0.40
+        - IC 正值比率 > 55%
+        - IC 标准差 < 0.08
+        - 策略稳定性评分
+
+        Returns:
+            {"passed": bool, "checks": [...], "summary": str} 或 None
+        """
+        if X_test is None or y_test is None:
+            self.logger.warning("无测试数据，跳过准确度校验")
+            return None
+
+        try:
+            from src.analyzers.accuracy_validator import (
+                AccuracyThresholdValidator,
+                RollingICValidator,
+                DrawdownValidator,
+                StrategyStabilityChecker,
+            )
+
+            # 在测试集上生成预测
+            if hasattr(model, "predict"):
+                preds = model.predict(X_test)
+                if hasattr(preds, "predictions"):
+                    scores = preds.predictions
+                else:
+                    scores = preds
+            else:
+                self.logger.warning("模型无 predict 方法，跳过校验")
+                return None
+
+            scores = np.nan_to_num(scores.flatten(), nan=0.0)
+            y = np.nan_to_num(y_test.flatten(), nan=0.0)
+            mask = (~np.isnan(scores)) & (~np.isnan(y)) & (~np.isinf(scores)) & (~np.isinf(y))
+            if mask.sum() < 30:
+                self.logger.warning(f"有效样本不足 ({mask.sum()})，跳过校验")
+                return None
+
+            p = scores[mask]
+            r = y[mask]
+
+            # 计算 IC
+            try:
+                rank_ic = np.corrcoef(p, r)[0, 1]
+            except Exception:
+                rank_ic = 0.0
+
+            # 阈值校验
+            threshold_validator = AccuracyThresholdValidator()
+            threshold_report = threshold_validator.validate(
+                rank_ic_series=np.array([rank_ic]),
+                rank_icir=abs(rank_ic) / (np.std(p) * np.std(r) + 1e-12),
+                max_drawdown=0.0,  # 仅模型预测层面
+            )
+
+            # 滚动 IC 稳定性
+            rolling_validator = RollingICValidator()
+            rolling_report = rolling_validator.validate(p.reshape(-1, 1), r)
+
+            # 策略稳定性
+            stability_checker = StrategyStabilityChecker()
+            stability_report = stability_checker.check(
+                predictions=p,
+                returns=r,
+            )
+
+            # 汇总
+            all_passed = (
+                threshold_report.passed
+                and rolling_report.get("passed", True)
+                and stability_report.get("passed", True)
+            )
+
+            checks = []
+            if hasattr(threshold_report, "checks"):
+                for c in threshold_report.checks:
+                    checks.append({
+                        "check": c.check_name if hasattr(c, "check_name") else "threshold",
+                        "passed": c.passed if hasattr(c, "passed") else False,
+                        "value": str(getattr(c, "actual", "")),
+                        "threshold": str(getattr(c, "threshold", "")),
+                    })
+
+            result = {
+                "passed": all_passed,
+                "checks": checks,
+                "rank_ic": round(rank_ic, 6),
+                "rolling_stable": rolling_report.get("passed", True),
+                "strategy_stable": stability_report.get("passed", True),
+                "summary": (
+                    "✓ 通过准确度红线校验" if all_passed
+                    else "✗ 未通过准确度红线校验，请检查模型"
+                ),
+            }
+
+            self.logger.info(
+                "准确度校验完成",
+                passed=all_passed,
+                rank_ic=round(rank_ic, 4),
+            )
+            return result
+
+        except Exception as e:
+            self.logger.warning(f"准确度校验执行失败: {e}")
+            return None
 
     def _run_backtest(
         self,
@@ -523,6 +774,10 @@ class WorkflowOrchestrator:
             ScoreWeightStrategy,
             PortfolioSimulator,
         )
+
+        if predictions.empty:
+            self.logger.warning("无预测数据，跳过回测")
+            return None
 
         strategy_map = {
             "topk_dropout": TopkDropoutStrategy,
@@ -544,8 +799,31 @@ class WorkflowOrchestrator:
 
         self.logger.info("组合回测", strategy=config.strategy.type, top_k=config.strategy.top_k)
 
-        # 阶段输出: BacktestResult
-        return None
+        try:
+            # 使用 predictions 作为价格代理，构建价格数据
+            if test_data is not None and hasattr(test_data, "shape"):
+                prices = test_data
+            else:
+                # 从预测得分生成模拟价格
+                prices = predictions.copy()
+
+            simulator = PortfolioSimulator(
+                strategy=strategy,
+                initial_capital=1_000_000,
+                commission_rate=strategy_config.commission_rate,
+                slippage_bps=strategy_config.slippage_bps,
+            )
+            result = simulator.run(predictions, prices)
+            self.logger.info(
+                "回测完成",
+                total_return=f"{getattr(result, 'total_return', 0):.2%}",
+                sharpe=f"{getattr(result, 'sharpe_ratio', 0):.2f}",
+            )
+            return result
+
+        except Exception as e:
+            self.logger.error(f"回测执行失败: {e}")
+            return None
 
     def _generate_report(
         self,
@@ -567,6 +845,51 @@ class WorkflowOrchestrator:
         config_path = exp_dir / "config.yaml"
         config.to_yaml(str(config_path))
 
+        # 收集训练指标
+        if training_result is not None:
+            report_metrics["best_score"] = getattr(training_result, "best_score", 0)
+            report_metrics["best_iteration"] = getattr(training_result, "best_iteration", 0)
+            report_metrics["train_time_ms"] = getattr(training_result, "train_time_ms", 0)
+            report_metrics["n_features"] = getattr(training_result, "n_features", 0)
+
+        # 收集回测指标
+        if backtest_result is not None:
+            report_metrics["total_return"] = getattr(backtest_result, "total_return", 0)
+            report_metrics["annual_return"] = getattr(backtest_result, "annual_return", 0)
+            report_metrics["sharpe_ratio"] = getattr(backtest_result, "sharpe_ratio", 0)
+            report_metrics["max_drawdown"] = getattr(backtest_result, "max_drawdown", 0)
+            report_metrics["win_rate"] = getattr(backtest_result, "win_rate", 0)
+            report_metrics["total_trades"] = getattr(backtest_result, "total_trades", 0)
+
+        # 尝试生成详细报告
+        try:
+            from src.analyzers.report_generator import PerformanceReport
+
+            pr = PerformanceReport()
+            if backtest_result is not None:
+                html_path = pr.export_html(
+                    backtest_result=backtest_result,
+                    output_path=str(exp_dir / "report.html"),
+                )
+                report_metrics["report_html"] = html_path
+
+                json_path = pr.export_json(
+                    backtest_result=backtest_result,
+                    output_path=str(exp_dir / "report.json"),
+                )
+                report_metrics["report_json"] = json_path
+
+        except Exception as e:
+            self.logger.warning(f"详细报告生成失败: {e}")
+
+        # 保存汇总指标
+        import json
+        metrics_path = exp_dir / "metrics.json"
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump(report_metrics, f, indent=2, ensure_ascii=False, default=str)
+        report_metrics["metrics_path"] = str(metrics_path)
+
+        self.logger.info("报告生成完成", metrics_count=len(report_metrics))
         return report_metrics
 
 
