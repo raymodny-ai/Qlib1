@@ -30,7 +30,7 @@ from starlette.responses import RedirectResponse, JSONResponse
 # ========================================================================
 
 class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
-    """HTTP → HTTPS 强制重定向 (开发环境 localhost 自动跳过)"""
+    """HTTP → HTTPS 强制重定向 (开发环境 localhost / 测试模式自动跳过)"""
 
     def __init__(self, app, enabled: bool = True):
         super().__init__(app)
@@ -40,10 +40,15 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         if self.enabled:
+            # 测试模式跳过 HTTPS 重定向
+            import os
+            if os.environ.get("QLIB_TEST_MODE") == "1":
+                return await call_next(request)
+
             proto = request.headers.get("X-Forwarded-Proto", "")
             scheme = request.url.scheme
             is_local = request.client and request.client.host in (
-                "127.0.0.1", "::1", "localhost",
+                "127.0.0.1", "::1", "localhost", "testclient",
             )
             if not is_local and proto != "https" and scheme != "https":
                 return RedirectResponse(

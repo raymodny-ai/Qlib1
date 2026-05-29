@@ -102,6 +102,10 @@ class FineGrainedPerm(str, Enum):
     AUDIT_EXPORT = "audit:export"                        # 导出审计报告
     AUDIT_DELETE = "audit:delete"                        # 删除审计日志 (Admin)
     
+    # ---------- 日志管理 ----------
+    LOGS_READ = "logs:read"                                  # 读取系统日志
+    LOGS_EXPORT = "logs:export"                              # 导出系统日志
+    
     # ---------- 用户管理 ----------
     USER_READ = "user:read"                              # 查看用户
     USER_CREATE = "user:create"                          # 创建用户
@@ -658,6 +662,7 @@ FINEGRAINED_PERMISSIONS: Dict[Role, Set[str]] = {
         FineGrainedPerm.REPORT_GENERATE,
         FineGrainedPerm.DATA_READ,
         FineGrainedPerm.RISK_READ,
+        FineGrainedPerm.LOGS_READ,
     },
     Role.PORTFOLIO_MANAGER: {
         FineGrainedPerm.MODEL_READ,
@@ -674,6 +679,7 @@ FINEGRAINED_PERMISSIONS: Dict[Role, Set[str]] = {
         FineGrainedPerm.RISK_READ,
         FineGrainedPerm.RISK_CONFIGURE,
         FineGrainedPerm.EXPERIMENT_APPROVE,
+        FineGrainedPerm.LOGS_READ,
     },
     Role.DATA_ADMIN: {
         FineGrainedPerm.DATA_READ,
@@ -696,6 +702,8 @@ FINEGRAINED_PERMISSIONS: Dict[Role, Set[str]] = {
         FineGrainedPerm.COMPLIANCE_REVIEW,
         FineGrainedPerm.DATA_READ,
         FineGrainedPerm.RISK_READ,
+        FineGrainedPerm.LOGS_READ,
+        FineGrainedPerm.LOGS_EXPORT,
     },
     Role.SYSTEM_ADMIN: {
         "*",

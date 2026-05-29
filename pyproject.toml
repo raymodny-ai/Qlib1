@@ -85,6 +85,12 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-xdist>=3.5.0",
+    "respx>=0.20.0",
+    "aioresponses>=0.7.6",
+    "freezegun>=1.4.0",
+    "faker>=24.0.0",
+    "factory-boy>=3.3.0",
     "black>=24.0.0",
     "isort>=5.13.0",
     "ruff>=0.2.0",
@@ -125,4 +131,9 @@ warn_unused_configs = true
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-addopts = "--cov=src --cov-report=term-missing"
+addopts = "--cov=src --cov-report=term-missing -v --asyncio-mode=auto"
+markers = [
+    "slow: 耗时超过1秒的测试",
+    "integration: 需要外部服务的集成测试",
+    "network: 需要真实网络访问的测试",
+]

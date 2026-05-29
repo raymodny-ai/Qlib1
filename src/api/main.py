@@ -128,6 +128,7 @@ _pit_manager = None
 _models: Dict[str, Any] = {}  # model_name -> loaded model
 _strategies: Dict[str, Any] = {}  # strategy_id -> strategy config
 _backtest_tasks: Dict[str, Dict[str, Any]] = {}
+_log_buffer: List[Dict[str, Any]] = []  # 内存日志缓冲区
 
 
 def get_data_server():
@@ -1246,6 +1247,301 @@ async def get_compliance_status(
             for c in report.get("controls", [])
         ],
     }
+
+
+# ===== 日志管理 =====
+
+_log_buffer: List[Dict[str, Any]] = []
+_MAX_LOG_BUFFER_SIZE = 10000
+
+
+class LogLevel(str, Enum):
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+    CRITICAL = "CRITICAL"
+
+
+
+class LogQueryParams(BaseModel):
+    level: Optional[LogLevel] = None
+    logger: Optional[str] = None
+    search: Optional[str] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    module: Optional[str] = None
+    limit: int = Field(100, ge=1, le=1000)
+    offset: int = Field(0, ge=0)
+
+
+
+class LogEntry(BaseModel):
+    timestamp: str
+    level: LogLevel
+    logger: str
+    message: str
+    module: Optional[str] = None
+    function: Optional[str] = None
+    line_number: Optional[int] = None
+    user_id: Optional[str] = None
+    request_id: Optional[str] = None
+    extra: Optional[Dict[str, Any]] = None
+
+
+
+class LogsResponse(BaseModel):
+    total: int
+    logs: List[LogEntry]
+    filters: Dict[str, Optional[str]]
+
+
+class LogStats(BaseModel):
+    total_logs: int
+    by_level: Dict[LogLevel, int]
+    last_error_at: Optional[str] = None
+    error_rate_24h: float
+
+
+def add_log_to_buffer(
+    level: LogLevel,
+    message: str,
+    logger_name: str = "api",
+    module: Optional[str] = None,
+    function: Optional[str] = None,
+    line_number: Optional[int] = None,
+    user_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+):
+    """添加日志到内存缓冲区"""
+    global _log_buffer
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "logger": logger_name,
+        "message": message,
+        "module": module,
+        "function": function,
+        "line_number": line_number,
+        "user_id": user_id,
+        "request_id": request_id,
+    }
+    _log_buffer.append(entry)
+    if len(_log_buffer) > _MAX_LOG_BUFFER_SIZE:
+        _log_buffer = _log_buffer[-_MAX_LOG_BUFFER_SIZE:]
+
+
+@app.get("/api/v1/logs", response_model=LogsResponse, tags=["Logs"])
+async def get_logs(
+    level: Optional[LogLevel] = Query(None, description="日志级别"),
+    logger: Optional[str] = Query(None, description="日志器名称"),
+    search: Optional[str] = Query(None, description="搜索关键字"),
+    start_time: Optional[str] = Query(None, description="开始时间 ISO8601"),
+    end_time: Optional[str] = Query(None, description="结束时间 ISO8601"),
+    module: Optional[str] = Query(None, description="模块名称"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    current_user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("logs:read")),
+):
+    """
+    获取系统日志列表
+
+    支持级别筛选、全文搜索、时间范围筛选。
+    所有角色可访问 (只读)。
+    """
+    logs = _log_buffer.copy()
+
+
+    # 级别筛选
+    if level:
+        logs = [l for l in logs if l["level"] == level]
+
+    # 日志器筛选
+    if logger:
+        logs = [l for l in logs if logger.lower() in l["logger"].lower()]
+
+    # 关键字搜索
+    if search:
+        logs = [l for l in logs if search.lower() in l["message"].lower()]
+
+
+    # 模块筛选
+    if module:
+        logs = [l for l in logs if l.get("module") == module]
+
+    # 时间范围筛选
+    if start_time:
+        try:
+            start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            logs = [l for l in logs if datetime.fromisoformat(l["timestamp"].replace("Z", "+00:00")) >= start_dt]
+        except Exception:
+            pass
+
+    if end_time:
+        try:
+            end_dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+            logs = [l for l in logs if datetime.fromisoformat(l["timestamp"].replace("Z", "+00:00")) <= end_dt]
+        except Exception:
+            pass
+
+    total = len(logs)
+    logs = logs[offset : offset + limit]
+
+    return LogsResponse(
+        total=total,
+        logs=[LogEntry(**l) for l in logs],
+        filters={
+            "level": level,
+            "logger": logger,
+            "start_time": start_time,
+            "end_time": end_time,
+        },
+    )
+
+
+@app.get("/api/v1/logs/stats", response_model=LogStats, tags=["Logs"])
+async def get_log_stats(
+    current_user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("logs:read")),
+):
+    """
+    获取日志统计信息
+
+    返回各级别日志数量、最后错误时间、24小时错误率。
+    """
+    global _log_buffer
+
+    by_level = {level: 0 for level in LogLevel}
+    for log in _log_buffer:
+        try:
+            by_level[LogLevel(log["level"])] += 1
+        except Exception:
+            pass
+
+    # 查找最后错误时间
+    last_error_at = None
+    error_count_24h = 0
+    now = datetime.now(timezone.utc)
+
+    for log in reversed(_log_buffer):
+        if log["level"] in (LogLevel.ERROR, LogLevel.CRITICAL):
+            try:
+                log_time = datetime.fromisoformat(log["timestamp"].replace("Z", "+00:00"))
+                if last_error_at is None:
+                    last_error_at = log["timestamp"]
+
+                if (now - log_time).total_seconds() <= 86400:
+                    error_count_24h += 1
+            except Exception:
+                pass
+
+    total_24h = sum(1 for l in _log_buffer
+                    if (now - datetime.fromisoformat(l["timestamp"].replace("Z", "+00:00"))).total_seconds() <= 86400
+                    )
+
+    error_rate_24h = error_count_24h / total_24h if total_24h > 0 else 0.0
+
+    return LogStats(
+        total_logs=len(_log_buffer),
+        by_level=by_level,
+        last_error_at=last_error_at,
+        error_rate_24h=round(error_rate_24h, 4),
+    )
+
+
+@app.get("/api/v1/logs/export", tags=["Logs"])
+async def export_logs(
+    level: Optional[LogLevel] = Query(None, description="日志级别"),
+    start_time: Optional[str] = Query(None, description="开始时间"),
+    end_time: Optional[str] = Query(None, description="结束时间"),
+    current_user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("logs:export")),
+):
+    """
+    导出日志到文件
+
+    返回下载路径。
+    仅 admin/auditor 可访问。
+    """
+    logs = _log_buffer.copy()
+
+    if level:
+        logs = [l for l in logs if l["level"] == level]
+
+    if start_time:
+        try:
+            start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            logs = [l for l in logs if datetime.fromisoformat(l["timestamp"].replace("Z", "+00:00")) >= start_dt]
+        except Exception:
+            pass
+
+    if end_time:
+        try:
+            end_dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+            logs = [l for l in logs if datetime.fromisoformat(l["timestamp"].replace("Z", "+00:00")) <= end_dt]
+        except Exception:
+            pass
+
+    # 保存到临时文件
+    logs_dir = Path("./logs/exports")
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"logs_export_{timestamp_str}.json"
+    filepath = logs_dir / filename
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(logs, f, ensure_ascii=False, indent=2)
+
+    logger.info(f"日志已导出: {filepath}", user_id=current_user, count=len(logs))
+
+    return {"message": "导出成功", "path": str(filepath)}
+
+
+from fastapi.responses import StreamingResponse
+import io
+
+
+@app.get("/api/v1/logs/stream", tags=["Logs"])
+async def stream_logs(
+    level: Optional[LogLevel] = Query(None, description="日志级别"),
+    since: Optional[str] = Query(None, description="自指定时间以来的日志"),
+    current_user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("logs:read")),
+):
+    """
+    SSE 实时日志流
+
+    建立 Server-Sent Events 连接，实时推送新日志。
+    """
+    async def event_generator():
+        last_index = len(_log_buffer)
+
+        while True:
+            await asyncio.sleep(2)  # 每2秒检查一次
+
+            if len(_log_buffer) > last_index:
+                new_logs = _log_buffer[last_index:]
+                last_index = len(_log_buffer)
+
+                for log in new_logs:
+                    if level and log["level"] != level:
+                        continue
+                    yield f"data: {json.dumps(log, default=str)}\n\n"
+
+            # 发送心跳
+            yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': datetime.now(timezone.utc).isoformat()})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ========================================================================

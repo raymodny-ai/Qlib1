@@ -299,6 +299,7 @@ class TestBuildXBRLFinancials:
 class TestCIKLookup:
     """_get_cik — ticker→CIK 映射"""
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_get_cik_success(self, collector):
         mock_resp = MagicMock()
@@ -316,6 +317,7 @@ class TestCIKLookup:
             cik = await collector._get_cik("AAPL")
             assert cik == "0000320193"
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_get_cik_case_insensitive(self, collector):
         mock_resp = MagicMock()
@@ -333,6 +335,7 @@ class TestCIKLookup:
             cik = await collector._get_cik("aapl")
             assert cik == "0000320193"
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_get_cik_not_found(self, collector):
         mock_resp = MagicMock()
@@ -350,6 +353,7 @@ class TestCIKLookup:
             cik = await collector._get_cik("ZZZZ")
             assert cik == ""
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_get_cik_http_error(self, collector):
         mock_resp = MagicMock()
@@ -372,6 +376,7 @@ class TestCIKLookup:
 class TestSearchFilings:
     """search_filings — SEC 报告搜索"""
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_search_10k_via_http(self, collector):
         """通过 HTTP 回退方案搜索 10-K"""
@@ -404,6 +409,7 @@ class TestSearchFilings:
             for f in filings:
                 assert f.filing_type == "10-K"
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_search_no_cik_returns_empty(self, collector):
         with patch.object(collector, '_get_cik', AsyncMock(return_value="")):
@@ -411,6 +417,7 @@ class TestSearchFilings:
             filings = await collector.search_filings("ZZZZ", FilingType.K10)
             assert filings == []
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_search_no_matching_filings(self, collector):
         """submissions 中无匹配类型的 filing"""
@@ -442,6 +449,7 @@ class TestSearchFilings:
 class TestParseXBRLHttp:
     """_parse_xbrl_http — SEC companyfacts API"""
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_parse_xbrl_via_http(self, collector):
         mock_resp = MagicMock()
@@ -464,6 +472,7 @@ class TestParseXBRLHttp:
             assert xbrl.net_income is not None
             assert xbrl.total_assets is not None
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_parse_xbrl_http_error(self, collector):
         mock_resp = MagicMock()
@@ -545,6 +554,7 @@ class TestPITTimeline:
         snapshot = collector.get_pit_data_at("AAPL", "2024-01-01")
         assert snapshot == {}
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_build_pit_timeline_mocked(self, collector):
         """通过 Mock CIK + submissions 构建时间线"""
@@ -633,6 +643,7 @@ class TestPITTimeline:
 class TestBatchCollect:
     """batch_collect_10k_10q"""
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_batch_collect_10k_10q(self, collector):
         async def mock_search(ticker, filing_type, years=5):
@@ -647,6 +658,7 @@ class TestBatchCollect:
             assert "MSFT" in results
             assert len(results["AAPL"]) == 2  # 1 10-K + 1 10-Q
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_batch_collect_with_error(self, collector):
         async def mock_search(ticker, filing_type, years=5):
@@ -665,6 +677,7 @@ class TestBatchCollect:
 class TestCollectFundamentals:
     """一站式基本面拉取"""
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_collect_fundamentals_mocked(self, collector):
         """通过 Mock edgartools / HTTP 拉取基本面"""

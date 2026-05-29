@@ -531,6 +531,7 @@ class TestQuotaSummary:
 class TestMockedHTTP:
     """Mock HTTP 会话集成测试"""
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_collect_company_mocked(self, collector):
         """模拟单只股票公司信息拉取"""
@@ -550,6 +551,7 @@ class TestMockedHTTP:
             assert batch.total_count == 1
             assert batch.success_count == 1
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_collect_standardized_fundamentals_mocked(self, collector):
         """模拟标准化基本面拉取（带过滤参数）"""
@@ -570,6 +572,7 @@ class TestMockedHTTP:
             )
             assert batch.total_count == 1
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_http_429_triggers_rate_limit_tracking(self, collector):
         """直接测试 _fetch_with_key 在 HTTP 429 时的行为"""
@@ -597,6 +600,7 @@ class TestMockedHTTP:
             # 检查响应包含 HTTP 429 错误
             assert "HTTP 429" in str(result.raw_response)
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_batch_with_mixed_results(self, collector):
         """混入失败请求的批量结果"""

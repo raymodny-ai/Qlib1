@@ -509,6 +509,7 @@ class TestEnums:
 class TestMockedAPICalls:
     """使用 Mock 的 API 调用集成测试"""
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_collect_fundamentals_mocked(self, collector):
         mock_resp = AsyncMock()
@@ -528,6 +529,7 @@ class TestMockedAPICalls:
         assert result.total_count == 1
         assert result.success_count == 1
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_collect_corporate_actions_concurrent(self, collector):
         """测试企业行动并发拉取"""
@@ -564,6 +566,7 @@ class TestMockedAPICalls:
         assert "splits" in results
         assert "dividends" in results
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_close_session(self, collector):
         mock_session = AsyncMock()

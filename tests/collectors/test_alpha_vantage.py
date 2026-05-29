@@ -516,6 +516,7 @@ class TestQuotaMonitoring:
 class TestBatchFetchWithMock:
     """使用 mock 的批量拉取集成测试"""
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_collect_daily_prices_mocked(self, collector):
         """模拟 collect_daily_prices: 验证 _execute_with_key 路径"""
@@ -537,6 +538,7 @@ class TestBatchFetchWithMock:
         assert result.total_count == 1
         assert result.success_count == 1
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_collect_company_overviews_mocked(self, collector):
         """模拟 collect_company_overviews — 验证解析链路"""
@@ -551,6 +553,7 @@ class TestBatchFetchWithMock:
         assert overview.operating_margin == 0.301
         assert overview.market_cap == 2800000000000
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_collect_fundamentals_concurrent(self, collector):
         """测试并发拉取全部基本面数据"""
@@ -600,6 +603,7 @@ class TestBatchFetchWithMock:
         assert "cash_flow" in results
         assert "earnings" in results
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_close_session(self, collector):
         mock_session = AsyncMock()
