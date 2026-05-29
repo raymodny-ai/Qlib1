@@ -2,7 +2,7 @@
 # Qlib美股基本面量化分析系统 — Makefile
 # ============================================================================
 
-.PHONY: help install install-dev data-ingest convert process train backtest report serve test lint format docker-build docker-up docker-down check clean
+.PHONY: help install install-dev data-ingest convert process train backtest report serve test lint format benchmark docker-build docker-up docker-down check clean
 
 # 默认目标
 help:
@@ -28,6 +28,7 @@ help:
 	@echo "    make test            运行测试"
 	@echo "    make lint            代码检查"
 	@echo "    make format          代码格式化"
+	@echo "    make benchmark       运行性能基准测试"
 	@echo ""
 	@echo "  Docker:"
 	@echo "    make docker-build    构建 Docker 镜像"
@@ -71,6 +72,10 @@ report:
 # ===== API 服务 =====
 serve:
 	python task.py serve
+
+# ===== 性能基准测试 (PRD 第4章) =====
+benchmark:
+	PYTHONPATH=. python scripts/benchmark.py
 
 # ===== 开发工具 =====
 test:

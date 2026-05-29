@@ -267,3 +267,113 @@ class TestPITValidator:
         validator = PITValidator()
         result = validator.validate(idx)
         assert "AAPL" in result["stats"]["missing_core_fields"]
+
+
+# ===== 修正版本链表测试 (Gap 3) =====
+
+class TestRestatementLinkedList:
+    """验证 PITRecord._next_version 显式字段和版本链表追溯"""
+
+    @pytest.fixture
+    def tri_amendment_index(self):
+        """构建三次修正 (v0→v1→v2) 的索引"""
+        idx = PITIndex()
+        idx.add_records([
+            PITRecord(
+                instrument="AAPL", field="revenue", period="2023-Q4",
+                period_end_date="2023-09-30", value=100.0,
+                filing_date="2023-11-03 16:30:00",
+            ),
+            PITRecord(
+                instrument="AAPL", field="revenue", period="2023-Q4",
+                period_end_date="2023-09-30", value=105.0,
+                filing_date="2023-12-15 10:00:00",
+            ),
+            PITRecord(
+                instrument="AAPL", field="revenue", period="2023-Q4",
+                period_end_date="2023-09-30", value=110.0,
+                filing_date="2024-02-01 08:00:00",
+            ),
+        ])
+        idx.sort_index()
+        return idx
+
+    def test_linked_list_chain(self, tri_amendment_index):
+        """验证 _next_version 显式字段正确链接
+
+        v0._next_version → v1.filing_date
+        v1._next_version → v2.filing_date
+        v2._next_version → None (最新版本)
+        """
+        records = tri_amendment_index._index["AAPL"]["revenue"]["2023-Q4"]
+        assert len(records) == 3
+
+        # v0 → v1
+        assert records[0].version_index == 0
+        assert records[0]._next_version == "2023-12-15 10:00:00"
+        assert records[0].get_next_version() == "2023-12-15 10:00:00"
+        assert not records[0].is_latest_version()
+        assert records[0].get_previous_version() is None  # 原始版本
+
+        # v1 → v2
+        assert records[1].version_index == 1
+        assert records[1]._next_version == "2024-02-01 08:00:00"
+        assert records[1].get_next_version() == "2024-02-01 08:00:00"
+        assert records[1].get_previous_version() == "2023-11-03 16:30:00"
+        assert not records[1].is_latest_version()
+
+        # v2 → None (最新)
+        assert records[2].version_index == 2
+        assert records[2]._next_version is None
+        assert records[2].get_next_version() is None
+        assert records[2].is_latest_version()
+        assert records[2].get_previous_version() == "2023-12-15 10:00:00"
+
+    def test_backfill_prevents_future_amendment(self, tri_amendment_index):
+        """验证回测时无法看到未来修正版本
+
+        查询 2023-11-15 (在 v1 和 v2 发布之前):
+        - 应只返回 v0 (value=100.0)
+        - v0 此时应是最新可见版本
+        """
+        result = tri_amendment_index.query("AAPL", "2023-11-15", fields=["revenue"])
+        assert len(result.records) == 1
+        assert result.records[0].value == 100.0
+        assert result.records[0].version_index == 0
+        # 在 2023-11-15 时, v1 尚未发布, v0 即最新
+        assert result.records[0].get_next_version() is not None  # v1 在数据中存在但不影响查询
+
+    def test_query_after_all_amendments_returns_latest(self, tri_amendment_index):
+        """查询 2024-03-01 (所有修正已发布): 应返回最新版本 v2"""
+        result = tri_amendment_index.query("AAPL", "2024-03-01", fields=["revenue"])
+        assert len(result.records) == 1
+        assert result.records[0].value == 110.0
+        assert result.records[0].version_index == 2
+        assert result.records[0].is_latest_version()
+
+    def test_multiple_amendments_amendment_chain(self, tri_amendment_index):
+        """验证三次以上修正的链式追溯 (amendment_chain 完整性)"""
+        records = tri_amendment_index._index["AAPL"]["revenue"]["2023-Q4"]
+        # v0: 原始版本, amendment_chain 为空 (无历史)
+        assert records[0].amendment_chain == []
+        # v1: amendment_chain = [v0, v1]
+        assert records[1].amendment_chain == [
+            "2023-11-03 16:30:00",
+            "2023-12-15 10:00:00",
+        ]
+        # v2: amendment_chain = [v0, v1, v2]
+        assert records[2].amendment_chain == [
+            "2023-11-03 16:30:00",
+            "2023-12-15 10:00:00",
+            "2024-02-01 08:00:00",
+        ]
+
+    def test_mid_revision_query_correct_version(self, tri_amendment_index):
+        """查询 2023-12-20 (v1 已发布, v2 尚未):
+        应返回 v1 (value=105.0)"""
+        result = tri_amendment_index.query("AAPL", "2023-12-20", fields=["revenue"])
+        assert len(result.records) == 1
+        assert result.records[0].value == 105.0
+        assert result.records[0].version_index == 1
+        # v1 的下一版本是 v2 (尚未发布)
+        assert result.records[0].get_next_version() == "2024-02-01 08:00:00"

@@ -37,6 +37,18 @@ class PITRecord:
     表示某个财务特征在某个时间点的可用值。
     同一 period 可能有多个 PITRecord（原始版本 + 修正版本），
     通过 amendment_chain 和 _next_version 形成版本链表。
+
+    Attributes:
+        instrument: 股票代码
+        field: 字段名 (如 'revenue', 'net_income')
+        period: 财务周期 (如 '2023-Q3', '2023-FY')
+        period_end_date: 财务期间截止日 (YYYY-MM-DD)
+        value: 特征数值
+        filing_date: SEC 接收日期 (YYYY-MM-DD HH:MM:SS)
+        is_amended: 是否为修正版本
+        amendment_chain: 所有版本的 filing_date 列表
+        version_index: 0=原始, 1=第一次修正...
+        _next_version: 下一修正版本的 filing_date (显式字段, 非 __dict__ hack)
     """
     instrument: str
     field: str                 # 字段名 (如 'revenue', 'net_income')
@@ -47,6 +59,26 @@ class PITRecord:
     is_amended: bool = False
     amendment_chain: List[str] = field(default_factory=list)
     version_index: int = 0     # 0=原始, 1=第一次修正...
+    _next_version: Optional[str] = None  # 下一修正版本 filing_date
+
+    def get_next_version(self) -> Optional[str]:
+        """获取下一个修正版本的 filing_date, None 表示已是最新版本"""
+        return self._next_version
+
+    def get_previous_version(self) -> Optional[str]:
+        """
+        获取上一个版本的 filing_date (从 amendment_chain 推断)
+
+        Returns:
+            上一个版本的 filing_date, None 表示这是原始版本
+        """
+        if self.version_index > 0 and len(self.amendment_chain) >= self.version_index:
+            return self.amendment_chain[self.version_index - 1]
+        return None
+
+    def is_latest_version(self) -> bool:
+        """判断当前记录是否是最新修正版本"""
+        return self._next_version is None
 
 
 @dataclass
@@ -191,9 +223,10 @@ class PITIndex:
                             record.amendment_chain = [
                                 r.filing_date for r in record_list[:i + 1]
                             ]
-                    # 建立 _next 指针
+                    # 建立 _next 指针 (显式字段赋值, 不再使用 __dict__ hack)
                     for i in range(len(record_list) - 1):
-                        record_list[i].__dict__["_next_version"] = record_list[i + 1].filing_date
+                        record_list[i]._next_version = record_list[i + 1].filing_date
+                    # 最后一条记录的 _next_version 保持 None
 
     # ===== PIT 查询 =====
 
