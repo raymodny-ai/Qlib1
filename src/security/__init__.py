@@ -40,6 +40,14 @@ from src.security.compliance import (
     VolumeEncryptionStatus,
 )
 
+from src.security.pm_gate import (
+    PMGateController,
+    GateState,
+    GateDimension,
+    GateAction,
+    GateClosedError,
+)
+
 __all__ = [
     # 核心安全
     "AES256Encryptor",
@@ -73,4 +81,10 @@ __all__ = [
     "DataSensitivity",
     "EncryptionMode",
     "VolumeEncryptionStatus",
+    # PM 熔断门控
+    "PMGateController",
+    "GateState",
+    "GateDimension",
+    "GateAction",
+    "GateClosedError",
 ]

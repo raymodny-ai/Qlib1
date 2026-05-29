@@ -19,6 +19,7 @@ RESTful API 微服务层
 
 import asyncio
 import json
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -841,3 +842,432 @@ async def get_report(
     except Exception as e:
         logger.error(f"报告查询失败 [{experiment_id}]: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve report: {e}")
+
+
+# ========================================================================
+#  PM 熔断门控端点 (PRD 第6章: PM 一键熔断权)
+# ========================================================================
+
+# PM Gate 单例
+_pm_gate = None
+
+
+def get_pm_gate():
+    """获取 PM Gate 控制器单例"""
+    global _pm_gate
+    if _pm_gate is None:
+        from src.security.pm_gate import PMGateController
+        rbac = get_rbac()
+        from src.security.security import AuditLogger
+        audit = AuditLogger()
+        _pm_gate = PMGateController(rbac=rbac, audit_logger=audit)
+        logger.info("PM Gate 控制器已初始化")
+    return _pm_gate
+
+
+class GateStatusResponse(BaseModel):
+    """门控状态响应"""
+    gates: Dict[str, str]
+    can_push_signal: bool
+    can_train_model: bool
+    can_deploy_model: bool
+    is_any_closed: bool
+    stats: Dict[str, Any]
+
+
+class GateActionRequest(BaseModel):
+    """门控操作请求"""
+    dimension: str = Field("signal", description="门控维度 signal/train/deploy")
+    reason: str = Field(..., min_length=1, max_length=500, description="操作原因")
+
+
+class GlobalGateActionRequest(BaseModel):
+    """全局门控操作请求"""
+    reason: str = Field(..., min_length=1, max_length=500, description="操作原因")
+
+
+class GateActionResponse(BaseModel):
+    """门控操作响应"""
+    success: bool
+    action_id: str = ""
+    dimension: str = ""
+    action: str = ""
+    from_state: str = ""
+    to_state: str = ""
+    triggered_by: str = ""
+    reason: str = ""
+    timestamp: str = ""
+    message: str = ""
+
+
+@app.get("/api/v1/gate/status", response_model=GateStatusResponse, tags=["PM Gate"])
+async def get_gate_status(user: str = Depends(get_current_user)):
+    """
+    查询门控状态
+
+    返回三个维度的门控状态、统计信息和历史记录。
+    所有角色均可查看 (透明性原则)。
+    """
+    gate = get_pm_gate()
+    stats = gate.get_stats()
+
+    return GateStatusResponse(
+        gates=gate.get_all_states(),
+        can_push_signal=gate.can_push_signal(),
+        can_train_model=gate.can_train_model(),
+        can_deploy_model=gate.can_deploy_model(),
+        is_any_closed=gate.is_any_closed(),
+        stats=stats,
+    )
+
+
+@app.post("/api/v1/gate/emergency-stop", response_model=GateActionResponse, tags=["PM Gate"])
+async def emergency_stop_gate(
+    request: GateActionRequest,
+    user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("signal:emergency_stop")),
+):
+    """
+    PM 一键熔断 — 紧急关闭指定维度的门控
+
+    仅 Portfolio Manager 或 System Admin 可操作。
+    操作将写入防篡改审计日志并触发高级别告警。
+
+    Args:
+        dimension: 门控维度 (signal=信号推送, train=模型训练, deploy=模型部署)
+        reason: 熔断原因 (必填，用于审计追溯)
+    """
+    gate = get_pm_gate()
+    try:
+        action = gate.emergency_stop(
+            user_id=user,
+            dimension=request.dimension,
+            reason=request.reason,
+        )
+        return GateActionResponse(
+            success=True,
+            action_id=action.action_id,
+            dimension=action.dimension,
+            action=action.action,
+            from_state=action.from_state,
+            to_state=action.to_state,
+            triggered_by=action.triggered_by,
+            reason=action.reason,
+            timestamp=action.timestamp,
+            message=f"门控 {action.dimension} 已熔断: {action.reason}",
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.post("/api/v1/gate/emergency-reopen", response_model=GateActionResponse, tags=["PM Gate"])
+async def emergency_reopen_gate(
+    request: GateActionRequest,
+    user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("signal:emergency_stop")),
+):
+    """
+    PM 恢复放行 — 重新打开指定维度的门控
+
+    仅 Portfolio Manager 或 System Admin 可操作。
+
+    Args:
+        dimension: 门控维度
+        reason: 恢复原因 (必填)
+    """
+    gate = get_pm_gate()
+    try:
+        action = gate.emergency_reopen(
+            user_id=user,
+            dimension=request.dimension,
+            reason=request.reason,
+        )
+        return GateActionResponse(
+            success=True,
+            action_id=action.action_id,
+            dimension=action.dimension,
+            action=action.action,
+            from_state=action.from_state,
+            to_state=action.to_state,
+            triggered_by=action.triggered_by,
+            reason=action.reason,
+            timestamp=action.timestamp,
+            message=f"门控 {action.dimension} 已恢复放行: {action.reason}",
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.post("/api/v1/gate/global-emergency-stop", response_model=List[GateActionResponse], tags=["PM Gate"])
+async def global_emergency_stop(
+    request: GlobalGateActionRequest,
+    user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("signal:emergency_stop")),
+):
+    """
+    PM 全局紧急熔断 — 同时关闭信号/训练/部署三门控
+
+    最严重场景: 系统性风险、交易所停摆等。
+
+    Args:
+        reason: 全局熔断原因 (必填)
+    """
+    gate = get_pm_gate()
+    try:
+        actions = gate.global_emergency_stop(user_id=user, reason=request.reason)
+        return [
+            GateActionResponse(
+                success=True,
+                action_id=a.action_id,
+                dimension=a.dimension,
+                action=a.action,
+                from_state=a.from_state,
+                to_state=a.to_state,
+                triggered_by=a.triggered_by,
+                reason=a.reason,
+                timestamp=a.timestamp,
+                message=f"门控 {a.dimension} 已全局熔断",
+            )
+            for a in actions
+        ]
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.post("/api/v1/gate/global-emergency-reopen", response_model=List[GateActionResponse], tags=["PM Gate"])
+async def global_emergency_reopen(
+    request: GlobalGateActionRequest,
+    user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("signal:emergency_stop")),
+):
+    """
+    PM 全局恢复放行
+
+    Args:
+        reason: 全局恢复原因 (必填)
+    """
+    gate = get_pm_gate()
+    try:
+        actions = gate.global_emergency_reopen(user_id=user, reason=request.reason)
+        return [
+            GateActionResponse(
+                success=True,
+                action_id=a.action_id,
+                dimension=a.dimension,
+                action=a.action,
+                from_state=a.from_state,
+                to_state=a.to_state,
+                triggered_by=a.triggered_by,
+                reason=a.reason,
+                timestamp=a.timestamp,
+                message=f"门控 {a.dimension} 已全局恢复",
+            )
+            for a in actions
+        ]
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+@app.get("/api/v1/gate/history", tags=["PM Gate"])
+async def get_gate_history(
+    dimension: Optional[str] = Query(None, description="筛选维度"),
+    limit: int = Query(50, ge=1, le=500),
+    user: str = Depends(get_current_user),
+):
+    """
+    查询门控操作历史
+
+    所有角色可查看操作记录 (透明原则)。
+    """
+    gate = get_pm_gate()
+    history = gate.get_history(dimension=dimension, limit=limit)
+    return {"total": len(history), "history": history}
+
+
+# ========================================================================
+#  合规审计端点 (PRD 第5章: SOX 合规 + 防篡改审计)
+# ========================================================================
+
+class AuditQueryParams(BaseModel):
+    """审计日志查询参数"""
+    event_type: Optional[str] = Field(None, description="事件类型")
+    user: Optional[str] = Field(None, description="操作者")
+    start_time: Optional[str] = Field(None, description="起始时间 ISO 格式")
+    end_time: Optional[str] = Field(None, description="结束时间 ISO 格式")
+    limit: int = Field(100, ge=1, le=1000)
+
+
+class ComplianceReportRequest(BaseModel):
+    """合规报告请求"""
+    quarter: str = Field("", description="报告季度 (如 2026-Q2)，空=当前季度")
+
+
+@app.get("/api/v1/audit/logs", tags=["Compliance"])
+async def query_audit_logs(
+    event_type: Optional[str] = Query(None),
+    user_filter: Optional[str] = Query(None, alias="user"),
+    start_time: Optional[str] = Query(None),
+    end_time: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    current_user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("audit:read")),
+):
+    """
+    查询审计日志
+
+    仅 Compliance Auditor / System Admin 可访问。
+    支持按事件类型、操作者、时间范围过滤。
+    """
+    from src.security.security import AuditLogger
+    audit = AuditLogger()
+
+    entries = audit.query(
+        event_type=event_type,
+        user=user_filter,
+        start_time=start_time,
+        end_time=end_time,
+        limit=limit,
+    )
+
+    return {
+        "total": len(entries),
+        "filters": {
+            "event_type": event_type,
+            "user": user_filter,
+            "start_time": start_time,
+            "end_time": end_time,
+        },
+        "entries": entries,
+    }
+
+
+@app.get("/api/v1/audit/verify-chain", tags=["Compliance"])
+async def verify_audit_chain(
+    date: Optional[str] = Query(None, description="日期 YYYYMMDD，空=今天"),
+    current_user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("audit:read")),
+):
+    """
+    验证审计日志哈希链完整性
+
+    检查 HMAC-SHA256 防篡改链是否完整。
+    若发现断裂，说明日志可能被篡改。
+
+    仅 Compliance Auditor / System Admin 可访问。
+    """
+    from src.security.security import AuditLogger
+    audit = AuditLogger()
+
+    result = audit.verify_chain(date_str=date)
+    return result
+
+
+@app.post("/api/v1/compliance/sox-report", tags=["Compliance"])
+async def generate_sox_report(
+    request: ComplianceReportRequest = ComplianceReportRequest(),
+    current_user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("compliance:export")),
+):
+    """
+    生成 SOX 合规报告
+
+    对标 PRD 5.2: 涵盖 7 大控制点 (访问控制/变更管理/审计完整性/
+    密钥管理/安全事件/数据加密/日志留存)。
+
+    仅 Compliance Auditor 可访问。
+    """
+    from src.security.security import AuditLogger, RBACManager
+    from src.security.compliance import SOXComplianceReporter
+
+    rbac = get_rbac()
+    audit = AuditLogger()
+
+    reporter = SOXComplianceReporter(
+        audit_logger=audit,
+        rbac_manager=rbac,
+    )
+
+    report = reporter.generate_quarterly_report(quarter=request.quarter)
+    return report
+
+
+@app.get("/api/v1/compliance/status", tags=["Compliance"])
+async def get_compliance_status(
+    current_user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("compliance:review")),
+):
+    """
+    获取系统合规状态概览
+
+    快速检查 RBAC、审计链、加密状态等关键合规指标。
+
+    仅 Compliance Auditor 可访问。
+    """
+    from src.security.security import AuditLogger
+    from src.security.compliance import SOXComplianceReporter
+
+    rbac = get_rbac()
+    audit = AuditLogger()
+
+    reporter = SOXComplianceReporter(
+        audit_logger=audit,
+        rbac_manager=rbac,
+    )
+
+    # 快速合规扫描
+    report = reporter.generate_quarterly_report()
+
+    return {
+        "overall_status": report.get("overall_status"),
+        "audit_chain_verified": report.get("audit_chain_verified"),
+        "period": report.get("period"),
+        "controls": [
+            {"control_id": c["control_id"], "status": c["status"]}
+            for c in report.get("controls", [])
+        ],
+    }
+
+
+@app.get("/api/v1/audit/export", tags=["Compliance"])
+async def export_audit_report(
+    event_type: Optional[str] = Query(None),
+    user_filter: Optional[str] = Query(None, alias="user"),
+    start_time: Optional[str] = Query(None),
+    end_time: Optional[str] = Query(None),
+    current_user: str = Depends(get_current_user),
+    _: bool = Depends(require_permission("audit:export")),
+):
+    """
+    导出审计报告 (JSON 格式)
+
+    生成带完整过滤条件的审计日志导出文件。
+
+    仅 Compliance Auditor 可访问。
+    """
+    from src.security.security import AuditLogger
+    import tempfile
+
+    audit = AuditLogger()
+
+    filters = {
+        "event_type": event_type,
+        "user": user_filter,
+        "start_time": start_time,
+        "end_time": end_time,
+        "limit": 10000,
+    }
+    # 清理 None 值
+    filters = {k: v for k, v in filters.items() if v is not None}
+
+    output_path = str(Path(tempfile.gettempdir()) / f"audit_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+    path = audit.export_report(output_path, **filters)
+
+    return {
+        "message": "审计报告已导出",
+        "path": path,
+        "filters": {k: v for k, v in filters.items() if k != "limit"},
+    }

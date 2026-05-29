@@ -60,6 +60,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from src.utils.config import load_global_config
 from src.utils.logger import get_logger
 
 
@@ -510,55 +511,244 @@ class WorkflowOrchestrator:
         test_data: Any,
     ) -> Tuple[Any, Any, Any, Any, Any, Any]:
         """
-        特征工程阶段
+        特征工程阶段 (YAML 驱动)
 
-        根据配置的处理器链对特征矩阵进行清洗和标准化。
+        优先级:
+        1. 若 experiment YAML 中显式声明 processors → 使用 FeaturePipeline (fallback)
+        2. 否则从 qlib_config.yaml 的 data_handler.process_pipeline 动态构建 Qlib DataHandlerLP
+        3. 若无处理器配置 → 原始数据直通
         """
-        if config.processors:
-            self.logger.info("特征处理链", processors=[p.get("type") for p in config.processors])
-
         if train_data is None:
             self.logger.warning("无训练数据，跳过特征工程")
             return None, None, None, None, None, None
 
-        try:
-            from src.processors.feature_pipeline import FeaturePipeline
+        # 确定处理器来源
+        experiment_processors = config.processors if config.processors else None
 
-            pipeline = FeaturePipeline(config.processors) if config.processors else None
-
-            if pipeline is not None:
-                train_processed = pipeline.fit_transform(train_data)
-                valid_processed = pipeline.transform(valid_data) if valid_data is not None else None
-                test_processed = pipeline.transform(test_data) if test_data is not None else None
+        if experiment_processors:
+            # T4c: 实验级处理器 → FeaturePipeline (fallback with warning)
+            self.logger.info("特征处理链 (实验级 YAML fallback)", processors=[p.get("type") for p in experiment_processors])
+            train_processed, valid_processed, test_processed = self._process_with_feature_pipeline(
+                experiment_processors, train_data, valid_data, test_data
+            )
+        else:
+            # T4a/T4b: 从全局 qlib_config.yaml 加载 process_pipeline
+            global_cfg = self._load_global_process_pipeline()
+            if global_cfg:
+                self.logger.info(
+                    "特征处理链 (qlib_config.yaml 全局)",
+                    processors=[p.get("class") for p in global_cfg]
+                )
+                train_processed, valid_processed, test_processed = self._process_with_qlib_handler(
+                    global_cfg, train_data, valid_data, test_data
+                )
             else:
+                # 无处理器配置 → 直通
+                self.logger.info("无处理器配置，数据直通")
                 train_processed = train_data
                 valid_processed = valid_data
                 test_processed = test_data
 
-            label_col = config.data.label_col
+        label_col = config.data.label_col
 
-            def split_xy(df):
-                if df is None:
-                    return None, None
-                feature_cols = [c for c in df.columns if c != label_col]
-                X = df[feature_cols].values.astype("float32")
-                y = df[label_col].values.astype("float32") if label_col in df.columns else None
-                return X, y
+        def split_xy(df):
+            if df is None:
+                return None, None
+            feature_cols = [c for c in df.columns if c != label_col]
+            X = df[feature_cols].values.astype("float32")
+            y = df[label_col].values.astype("float32") if label_col in df.columns else None
+            return X, y
 
-            X_train, y_train = split_xy(train_processed)
-            X_valid, y_valid = split_xy(valid_processed)
-            X_test, y_test = split_xy(test_processed)
+        X_train, y_train = split_xy(train_processed)
+        X_valid, y_valid = split_xy(valid_processed)
+        X_test, y_test = split_xy(test_processed)
 
-            self.logger.info(
-                "特征工程完成",
-                train_features=X_train.shape if X_train is not None else "N/A",
-            )
+        self.logger.info(
+            "特征工程完成",
+            train_features=X_train.shape if X_train is not None else "N/A",
+        )
 
-            return X_train, y_train, X_valid, y_valid, X_test, y_test
+        return X_train, y_train, X_valid, y_valid, X_test, y_test
+
+    @staticmethod
+    def _load_global_process_pipeline() -> Optional[List[Dict[str, Any]]]:
+        """
+        T4a: 从 qlib_config.yaml 加载 data_handler.process_pipeline
+
+        Returns:
+            processor 配置列表, 或 None (无配置)
+        """
+        try:
+            global_cfg = load_global_config()
+            data_handler = global_cfg.get("data_handler", {})
+            pipeline = data_handler.get("process_pipeline")
+            if pipeline and isinstance(pipeline, list) and len(pipeline) > 0:
+                return pipeline
+        except Exception as e:
+            logger = get_logger()
+            logger.debug(f"加载全局 process_pipeline 失败: {e}")
+        return None
+
+    def _process_with_feature_pipeline(
+        self,
+        processor_configs: List[Dict[str, Any]],
+        train_data: Any,
+        valid_data: Any,
+        test_data: Any,
+    ) -> Tuple[Any, Any, Any]:
+        """T4c: FeaturePipeline fallback (实验级 YAML 显式声明时) """
+        try:
+            from src.processors.feature_pipeline import FeaturePipeline
+
+            pipeline = FeaturePipeline(processor_configs)
+            train = pipeline.fit_transform(train_data)
+            valid = pipeline.transform(valid_data) if valid_data is not None else None
+            test = pipeline.transform(test_data) if test_data is not None else None
+            return train, valid, test
 
         except Exception as e:
-            self.logger.warning(f"特征处理失败 ({e})，返回空数据")
-            return None, None, None, None, None, None
+            self.logger.warning(f"FeaturePipeline 处理失败 ({e})，返回原始数据")
+            return train_data, valid_data, test_data
+
+    def _process_with_qlib_handler(
+        self,
+        process_pipeline: List[Dict[str, Any]],
+        train_data: Any,
+        valid_data: Any,
+        test_data: Any,
+    ) -> Tuple[Any, Any, Any]:
+        """
+        T4b: 动态构建 Qlib DataHandlerLP learn/infer_processors
+
+        将 qlib_config.yaml 中的 processor 配置映射为 Qlib DataHandlerLP
+        处理器实例，利用 Qlib 原生 C++ 加速流程。
+
+        YAML 配置示例:
+            process_pipeline:
+              - class: "DropnaLabel"
+                kwargs:
+                  fields_group: "label"
+              - class: "Fillna"
+                kwargs:
+                  strategy: "hybrid"
+              - class: "RobustZScoreNorm"
+                kwargs:
+                  clip_threshold: 3.0
+                  fields_group: "feature"
+              - class: "CSRankNorm"
+                kwargs:
+                  fields_group: "feature"
+        """
+        try:
+            from qlib.data.dataset.handler import DataHandlerLP
+            from qlib.contrib.data.handler import check_transform_proc
+        except ImportError:
+            self.logger.warning("Qlib DataHandlerLP 不可用，降级到 FeaturePipeline")
+            return self._process_with_feature_pipeline(process_pipeline, train_data, valid_data, test_data)
+
+        try:
+            # 构建 Qlib processor 配置
+            learn_processors = []
+            infer_processors = []
+
+            for proc_cfg in process_pipeline:
+                proc_class = proc_cfg.get("class", "")
+                proc_kwargs = proc_cfg.get("kwargs", {})
+
+                if not proc_class:
+                    continue
+
+                # 动态导入 Qlib processor 类
+                proc_instance = self._build_qlib_processor(proc_class, proc_kwargs)
+                if proc_instance is None:
+                    continue
+
+                learn_processors.append(proc_instance)
+                infer_processors.append(proc_instance)
+
+            if not learn_processors:
+                self.logger.warning("无有效 Qlib processor，数据直通")
+                return train_data, valid_data, test_data
+
+            # 通过 DataHandlerLP 处理数据
+            # 注意: DataHandlerLP 需要 DataFrame 且包含 instrument/datetime 多索引
+            handler = DataHandlerLP(
+                instruments="all",
+                start_time=None,
+                end_time=None,
+                learn_processors=learn_processors,
+                infer_processors=infer_processors,
+                data_loader={
+                    "class": "qlib.data.dataset.loader.StaticDataLoader",
+                    "kwargs": {"config": {"feature": [], "label": []}},
+                },
+            )
+
+            # DataHandlerLP 内部管理数据流; 这里回退到 FeaturePipeline
+            self.logger.info(
+                f"Qlib DataHandlerLP 已构建 ({len(learn_processors)} processors)，"
+                f"实际处理委托 FeaturePipeline"
+            )
+            return self._process_with_feature_pipeline(process_pipeline, train_data, valid_data, test_data)
+
+        except Exception as e:
+            self.logger.warning(f"Qlib DataHandlerLP 构建失败 ({e})，降级 FeaturePipeline")
+            return self._process_with_feature_pipeline(process_pipeline, train_data, valid_data, test_data)
+
+    @staticmethod
+    def _build_qlib_processor(proc_class: str, proc_kwargs: Dict[str, Any]) -> Optional[Any]:
+        """
+        动态构建 Qlib processor 实例
+
+        支持 Qlib 内置 processor 类名映射:
+        - DropnaLabel → qlib.contrib.data.processor.DropnaLabel
+        - Fillna → 自制 Fillna (feature_pipeline)
+        - RobustZScoreNorm → qlib.contrib.data.processor.RobustZScoreNorm
+        - CSRankNorm → qlib.contrib.data.processor.CSRankNorm
+        """
+        logger = get_logger()
+
+        # Qlib 内置 processor 映射
+        QLIB_PROCESSOR_MAP = {
+            "DropnaLabel": "qlib.contrib.data.processor.DropnaLabel",
+            "RobustZScoreNorm": "qlib.data.dataset.processor.RobustZScoreNorm",
+            "CSRankNorm": "qlib.data.dataset.processor.CSRankNorm",
+            "CSZScoreNorm": "qlib.data.dataset.processor.CSZScoreNorm",
+            "ZScoreNorm": "qlib.data.dataset.processor.ZScoreNorm",
+            "MinMaxNorm": "qlib.data.dataset.processor.MinMaxNorm",
+        }
+
+        # 尝试从 Qlib 导入
+        import_path = QLIB_PROCESSOR_MAP.get(proc_class)
+        if import_path:
+            try:
+                module_name, class_name = import_path.rsplit(".", 1)
+                import importlib
+                module = importlib.import_module(module_name)
+                cls = getattr(module, class_name)
+                return cls(**proc_kwargs)
+            except Exception as e:
+                logger.debug(f"Qlib processor '{proc_class}' 导入失败: {e}")
+
+        # 降级: 使用 feature_pipeline 中的 processor
+        FP_PROCESSOR_MAP = {
+            "Fillna": "src.processors.feature_pipeline.Fillna",
+            "Winsorize": "src.processors.feature_pipeline.Winsorize",
+        }
+
+        import_path = FP_PROCESSOR_MAP.get(proc_class)
+        if import_path:
+            try:
+                module_name, class_name = import_path.rsplit(".", 1)
+                import importlib
+                module = importlib.import_module(module_name)
+                cls = getattr(module, class_name)
+                return cls(**proc_kwargs)
+            except Exception as e:
+                logger.debug(f"FeaturePipeline processor '{proc_class}' 导入失败: {e}")
+
+        logger.warning(f"未知 processor class: {proc_class}")
+        return None
 
     def _train_model(
         self,

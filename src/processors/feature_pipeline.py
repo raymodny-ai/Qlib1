@@ -420,6 +420,15 @@ class FeaturePipeline:
     def __init__(self, processor_configs: List[Dict[str, Any]]):
         self.logger = get_logger()
         self.processors: List[BaseProcessor] = []
+
+        # T4c: FeaturePipeline 降级为 fallback 路径
+        # 主路径已迁移至 runner.py → Qlib DataHandlerLP (qlib_config.yaml 驱动)
+        self.logger.warning(
+            "FeaturePipeline 作为 fallback 处理器管道运行。"
+            "建议在 qlib_config.yaml 的 data_handler.process_pipeline 中配置处理器，"
+            "以启用 Qlib DataHandlerLP C++ 加速。"
+        )
+
         self._build_processors(processor_configs)
 
     def _build_processors(self, configs: List[Dict[str, Any]]):

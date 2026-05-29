@@ -141,3 +141,13 @@ def get_config() -> ConfigLoader:
     if _config_instance is None:
         _config_instance = ConfigLoader()
     return _config_instance
+
+
+def load_global_config() -> Dict[str, Any]:
+    """
+    加载全局配置 (便捷函数)
+
+    Returns:
+        完整配置字典
+    """
+    return get_config().get_all()

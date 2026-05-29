@@ -295,11 +295,16 @@ class PITIndex:
                 continue
 
             row = {}
-            # 对每个 field，取最新 period 的值
+            # 对每个 field，维护当前已记录的最大 period_end_date
+            # 修复: 之前用 result.records[0].period_end_date 作为比较基准
+            # (该值取决于 dict 遍历顺序，完全随机)，导致静默数据污染
+            latest_period_end: Dict[str, str] = {}
             for r in result.records:
                 key = r.field
-                if key not in row or r.period_end_date > result.records[0].period_end_date:
+                current_latest = latest_period_end.get(key, "")
+                if key not in row or r.period_end_date > current_latest:
                     row[key] = r.value
+                    latest_period_end[key] = r.period_end_date
 
             if row:
                 rows[inst] = row

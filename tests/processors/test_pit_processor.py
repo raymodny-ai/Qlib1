@@ -153,6 +153,67 @@ class TestPITIndex:
         assert isinstance(df, pd.DataFrame)
         assert "AAPL" in df.index
 
+    def test_query_feature_matrix_newest_period_wins(self):
+        """T2.2: 验证同一 field 有多个 period 时，取 period_end_date 最新的值
+
+        构造: 同一 instrument(AAPL) 同一 field(revenue) 有两个 period:
+        - 2023-Q4 (period_end=2023-09-30, value=100)
+        - 2024-Q1 (period_end=2023-12-31, value=200)
+
+        旧 Bug: 用 result.records[0].period_end_date 作为比较基准，
+        若第一个遍历到 2023-Q4 则永远输出 100，导致静默数据污染。
+        """
+        idx = PITIndex()
+        idx.add_records([
+            PITRecord(
+                instrument="AAPL", field="revenue", period="2024-Q1",
+                period_end_date="2023-12-31", value=200.0,
+                filing_date="2024-02-01 16:30:00",
+            ),
+            PITRecord(
+                instrument="AAPL", field="revenue", period="2023-Q4",
+                period_end_date="2023-09-30", value=100.0,
+                filing_date="2023-11-03 16:30:00",
+            ),
+        ])
+        idx.sort_index()
+
+        df = idx.query_feature_matrix(
+            ["AAPL"], "2024-03-01",
+            fields=["revenue"],
+        )
+        # 应取 period_end_date 最新 (=2023-12-31) 的值，即 200.0
+        assert df.loc["AAPL", "revenue"] == 200.0, (
+            f"应取最新 period 的值 200.0，实际: {df.loc['AAPL', 'revenue']}"
+        )
+
+    def test_query_feature_matrix_newest_period_wins_reversed_order(self):
+        """T2.2b: 同上，但记录添加顺序颠倒，验证确定性行为"""
+        idx = PITIndex()
+        # 这次把旧 period 放前面（与上例顺序相反）
+        idx.add_records([
+            PITRecord(
+                instrument="AAPL", field="revenue", period="2023-Q4",
+                period_end_date="2023-09-30", value=100.0,
+                filing_date="2023-11-03 16:30:00",
+            ),
+            PITRecord(
+                instrument="AAPL", field="revenue", period="2024-Q1",
+                period_end_date="2023-12-31", value=200.0,
+                filing_date="2024-02-01 16:30:00",
+            ),
+        ])
+        idx.sort_index()
+
+        df = idx.query_feature_matrix(
+            ["AAPL"], "2024-03-01",
+            fields=["revenue"],
+        )
+        # 无论添加顺序如何，都应取最新 period 的值 200.0
+        assert df.loc["AAPL", "revenue"] == 200.0, (
+            f"应取最新 period 的值 200.0 (与添加顺序无关)，实际: {df.loc['AAPL', 'revenue']}"
+        )
+
     def test_amendment_history(self, pit_index):
         history = pit_index.get_amendment_history("AAPL", "revenue", "2023-Q4")
         assert len(history) == 2
