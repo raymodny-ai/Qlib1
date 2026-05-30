@@ -17,36 +17,31 @@ import AssessmentIcon from '@mui/icons-material/Assessment';
 import HistoryIcon from '@mui/icons-material/History';
 import SecurityIcon from '@mui/icons-material/Security';
 import GavelIcon from '@mui/icons-material/Gavel';
-import SettingsIcon from '@mui/icons-material/Settings';
 import ArticleIcon from '@mui/icons-material/Article';
+import StorageIcon from '@mui/icons-material/Storage';
 import LockIcon from '@mui/icons-material/Lock';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import { useUIStore } from '@/store/uiStore';
 import { useAuthStore, roleLabels } from '@/store/authStore';
+import type { Permission } from '@/types/api';
 
 interface MenuItem {
   label: string;
   icon: React.ReactNode;
   path: string;
-  permission?: string;
+  permission?: Permission;
   roles?: string[];
 }
 
 const menuItems: MenuItem[] = [
   { label: 'Dashboard', icon: <DashboardIcon />, path: '/' },
-  { label: 'Instruments', icon: <ShowChartIcon />, path: '/instruments' },
+  { label: 'Data', icon: <StorageIcon />, path: '/data', permission: 'experiment:read' },
   { label: 'Factors', icon: <AssessmentIcon />, path: '/factors' },
-  { label: 'Prediction', icon: <ShowChartIcon />, path: '/prediction', permission: 'model:read' },
   { label: 'Backtest', icon: <HistoryIcon />, path: '/backtest', permission: 'experiment:submit' },
-  { label: 'Reports', icon: <AssessmentIcon />, path: '/reports', permission: 'report:read' },
-  { label: 'Portfolio', icon: <ShowChartIcon />, path: '/portfolio' },
-  { label: 'Risk', icon: <SecurityIcon />, path: '/risk', permission: 'experiment:read' },
   { label: 'PM Gate', icon: <GavelIcon />, path: '/gate', permission: 'signal:emergency_stop' },
-  { label: 'Audit Logs', icon: <SecurityIcon />, path: '/audit', permission: 'audit:read' },
-  { label: 'Logs', icon: <ArticleIcon />, path: '/logs', permission: 'logs:read' },
   { label: 'Compliance', icon: <SecurityIcon />, path: '/compliance', permission: 'compliance:review' },
-  { label: 'Settings', icon: <SettingsIcon />, path: '/settings' },
+  { label: 'Logs', icon: <ArticleIcon />, path: '/logs', permission: 'logs:read' },
 ];
 
 export function Sidebar() {
@@ -54,11 +49,14 @@ export function Sidebar() {
   const navigate = useNavigate();
   const pathname = location.pathname;
   const { sidebarOpen, sidebarCollapsed, toggleSidebar, setSidebarCollapsed } = useUIStore();
-  const { role } = useAuthStore();
+  const { role, hasPermission } = useAuthStore();
 
   const filteredMenuItems = menuItems.filter((item) => {
     if (item.roles) {
       return item.roles.includes(role);
+    }
+    if (item.permission) {
+      return hasPermission(item.permission);
     }
     return true;
   });

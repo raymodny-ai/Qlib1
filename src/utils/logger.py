@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 import structlog
-from pythonjsonlogger import jsonlogger
+from pythonjsonlogger.json import JsonFormatter
 
 
 def setup_logging(
@@ -61,7 +61,7 @@ def setup_logging(
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(level)
     if use_json:
-        console_formatter = jsonlogger.JsonFormatter(
+        console_formatter = JsonFormatter(
             "%(timestamp)s %(name)s %(level)s %(message)s"
         )
     else:
@@ -74,7 +74,7 @@ def setup_logging(
     # 文件输出
     file_handler = logging.FileHandler(log_path / "system.log", encoding="utf-8")
     file_handler.setLevel(level)
-    file_formatter = jsonlogger.JsonFormatter(
+    file_formatter = JsonFormatter(
         "%(timestamp)s %(name)s %(level)s %(message)s"
     )
     file_handler.setFormatter(file_formatter)

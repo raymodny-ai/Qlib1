@@ -525,7 +525,7 @@ class TestBatchFetchWithMock:
         mock_response.json = AsyncMock(return_value=MOCK_DAILY_PRICES_RESPONSE)
 
         mock_session = AsyncMock()
-        mock_session.get = AsyncMock(return_value=mock_response)
+        mock_session.get = MagicMock(return_value=mock_response)
         mock_session.closed = False
 
         collector._session = mock_session
@@ -571,7 +571,8 @@ class TestBatchFetchWithMock:
         mock_response.json = mock_json
 
         mock_session = AsyncMock()
-        async def mock_get(url, params):
+
+        def mock_get(url, params):
             func = params.get("function", "OVERVIEW")
             if func == "OVERVIEW":
                 mock_response._current_data = MOCK_OVERVIEW_RESPONSE

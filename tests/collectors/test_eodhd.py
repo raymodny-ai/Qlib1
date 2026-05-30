@@ -517,7 +517,7 @@ class TestMockedAPICalls:
         mock_resp.json = AsyncMock(return_value=MOCK_FUNDAMENTALS_AAPL)
 
         mock_session = AsyncMock()
-        mock_session.get = AsyncMock(return_value=mock_resp)
+        mock_session.get = MagicMock(return_value=mock_resp)
         mock_session.closed = False
 
         collector._session = mock_session
@@ -543,15 +543,12 @@ class TestMockedAPICalls:
 
         call_count = [0]
 
-        async def mock_get(url, params):
+        def mock_get(url, params):
             call_count[0] += 1
-            mock_resp = AsyncMock()
-            mock_resp.status = 200
             if "splits" in url:
-                mock_resp.json = AsyncMock(return_value=MOCK_SPLITS_AAPL)
+                return mock_resp_splits
             else:
-                mock_resp.json = AsyncMock(return_value=MOCK_DIVIDENDS_AAPL)
-            return mock_resp
+                return mock_resp_divs
 
         mock_session = AsyncMock()
         mock_session.get = mock_get

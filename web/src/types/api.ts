@@ -324,6 +324,58 @@ export interface SOXReport {
   };
 }
 
+// ============ Data Management (Sprint 3: F-060–F-063) ============
+
+export type DataSourceStatusType = 'connected' | 'disconnected' | 'error' | 'degraded';
+
+export interface DataSourceInfo {
+  source_id: string;
+  name: string;
+  provider: string;
+  status: DataSourceStatusType;
+  last_sync: string | null;
+  coverage_start: string | null;
+  coverage_end: string | null;
+  record_count: number;
+  quality_score: number;
+  description: string;
+}
+
+export interface DatasetInfo {
+  name: string;
+  description: string;
+  n_instruments: number;
+  n_fields: number;
+  date_range: { start: string; end: string };
+  size_mb: number;
+  last_updated: string | null;
+}
+
+export type IngestMode = 'full' | 'incremental';
+
+export interface DataIngestRequest {
+  dataset: string;
+  mode: IngestMode;
+  sources?: string[];
+  force?: boolean;
+}
+
+export interface DataIngestResponse {
+  task_id: string;
+  dataset: string;
+  mode: IngestMode;
+  status: string;
+  message: string;
+}
+
+export interface DataPreviewResponse {
+  dataset: string;
+  total_rows: number;
+  preview_rows: number;
+  columns: string[];
+  rows: Record<string, unknown>[];
+}
+
 // ============ API Error ============
 
 export interface ApiError {

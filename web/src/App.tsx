@@ -13,6 +13,7 @@ import { BacktestPage } from '@/pages/Backtest';
 import { PMGatePage } from '@/pages/PMGate';
 import { CompliancePage } from '@/pages/Compliance';
 import { DataManagementPage } from '@/pages/DataManagement';
+import { AccessDeniedPage } from '@/pages/AccessDenied';
 import { useUIStore } from '@/store/uiStore';
 
 const typography = {
@@ -147,7 +148,7 @@ export function App() {
               <Route
                 path="/compliance"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute permission="compliance:review">
                     <AppShell>
                       <ErrorBoundary><CompliancePage /></ErrorBoundary>
                     </AppShell>
@@ -157,11 +158,19 @@ export function App() {
               <Route
                 path="/data"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute permission="experiment:read">
                     <AppShell>
                       <ErrorBoundary><DataManagementPage /></ErrorBoundary>
                     </AppShell>
                   </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/access-denied"
+                element={
+                  <AppShell>
+                    <ErrorBoundary><AccessDeniedPage /></ErrorBoundary>
+                  </AppShell>
                 }
               />
               <Route path="*" element={<Navigate to="/" replace />} />

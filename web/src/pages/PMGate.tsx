@@ -21,7 +21,17 @@ import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Paper from '@mui/material/Paper';
-import { useState } from 'react';
+import FormControl from '@mui/material/FormControl';
+import InputLabel from '@mui/material/InputLabel';
+import Select from '@mui/material/Select';
+import MenuItem from '@mui/material/MenuItem';
+import IconButton from '@mui/material/IconButton';
+import Tooltip from '@mui/material/Tooltip';
+import Switch from '@mui/material/Switch';
+import Stack from '@mui/material/Stack';
+import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
+import NotificationsOffIcon from '@mui/icons-material/NotificationsOff';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useSnackbar } from 'notistack';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -45,16 +55,97 @@ export function PMGatePage() {
   const [confirmedStop, setConfirmedStop] = useState(false);
   const [confirmedGlobalStop, setConfirmedGlobalStop] = useState(false);
 
+  // C4: History filters & pagination
+  const [historyDimension, setHistoryDimension] = useState<string>('');
+  const [historyPage, setHistoryPage] = useState(0);
+  const historyLimit = 20;
+
+  // C3: Notification toggle
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
+    return localStorage.getItem('qlib1_gate_notifications') === 'true';
+  });
+
   const { data: gateStatus, isLoading } = useQuery({
     queryKey: ['gate-status'],
     queryFn: getGateStatus,
-    refetchInterval: 10000,
+    refetchInterval: 3000, // C3: 3s polling
   });
 
+  const historyParams = useMemo(() => ({
+    limit: historyLimit,
+    dimension: historyDimension || undefined,
+  }), [historyLimit, historyDimension]);
+
   const { data: history } = useQuery({
-    queryKey: ['gate-history'],
-    queryFn: () => getGateHistory({ limit: 50 }),
+    queryKey: ['gate-history', historyParams],
+    queryFn: () => getGateHistory(historyParams),
   });
+
+  // C3: Browser notification when gate closes
+  const prevGateState = useState<string | null>(null);
+  useEffect(() => {
+    if (!gateStatus || !notificationsEnabled) return;
+    const currentState = JSON.stringify(gateStatus.gates);
+    if (prevGateState[0] && prevGateState[0] !== currentState) {
+      const prev = JSON.parse(prevGateState[0]);
+      const curr = gateStatus.gates;
+      for (const dim of ['signal', 'train', 'deploy'] as GateDimension[]) {
+        if (prev[dim] === 'open' && curr[dim] === 'closed') {
+          if (Notification.permission === 'granted') {
+            new Notification('Qlib1 Gate Alert', {
+              body: `${dim.toUpperCase()} gate has been CLOSED`,
+              icon: '/favicon.ico',
+            });
+          }
+        }
+      }
+    }
+    prevGateState[1](currentState);
+  }, [gateStatus, notificationsEnabled]);
+
+  const requestNotificationPermission = useCallback(() => {
+    if (Notification.permission === 'default') {
+      Notification.requestPermission().then((perm) => {
+        if (perm === 'granted') {
+          setNotificationsEnabled(true);
+          localStorage.setItem('qlib1_gate_notifications', 'true');
+          enqueueSnackbar('Notifications enabled', { variant: 'success' });
+        } else {
+          setNotificationsEnabled(false);
+          localStorage.removeItem('qlib1_gate_notifications');
+        }
+      });
+    } else {
+      const newVal = !notificationsEnabled;
+      setNotificationsEnabled(newVal);
+      localStorage.setItem('qlib1_gate_notifications', String(newVal));
+      enqueueSnackbar(newVal ? 'Notifications enabled' : 'Notifications disabled', {
+        variant: newVal ? 'success' : 'info',
+      });
+    }
+  }, [notificationsEnabled, enqueueSnackbar]);
+
+  // C6: Timeline data (last 7 days)
+  const timelineData = useMemo(() => {
+    if (!history?.history) return [];
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    return history.history
+      .filter((e) => new Date(e.timestamp) >= sevenDaysAgo)
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  }, [history]);
+
+  // C4: Relative time helper
+  const relativeTime = (ts: string) => {
+    const diff = Date.now() - new Date(ts).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  };
 
   const stopMutation = useMutation({
     mutationFn: () => emergencyStopGate({ dimension, reason }),
@@ -104,9 +195,19 @@ export function PMGatePage() {
 
   return (
     <Box>
-      <Typography variant="h4" sx={{ mb: 3, fontWeight: 600 }}>
-        PM Gate Control
-      </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
+        <Typography variant="h4" sx={{ fontWeight: 600 }}>
+          PM Gate Control
+        </Typography>
+        <Tooltip title={notificationsEnabled ? 'Notifications ON' : 'Notifications OFF'}>
+          <IconButton
+            onClick={requestNotificationPermission}
+            color={notificationsEnabled ? 'warning' : 'default'}
+          >
+            {notificationsEnabled ? <NotificationsActiveIcon /> : <NotificationsOffIcon />}
+          </IconButton>
+        </Tooltip>
+      </Box>
 
       <Grid container spacing={3} sx={{ mb: 3 }}>
         {/* Global Emergency Stop */}
@@ -198,9 +299,85 @@ export function PMGatePage() {
           ))}
       </Grid>
 
-      <Typography variant="h5" sx={{ mb: 2 }}>
-        Action History
-      </Typography>
+      {/* C6: 7-Day Gate Timeline */}
+      {timelineData.length > 0 && (
+        <>
+          <Typography variant="h5" sx={{ mb: 2 }}>
+            Gate Timeline (Last 7 Days)
+          </Typography>
+          <Paper sx={{ p: 3, mb: 3, overflow: 'auto' }}>
+            <Box sx={{ position: 'relative', minWidth: timelineData.length * 28 + 40 }}>
+              {/* Timeline bar */}
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                {timelineData.map((entry, i) => (
+                  <Tooltip
+                    key={entry.action_id}
+                    title={
+                      <Box>
+                        <Typography variant="caption">
+                          {entry.dimension} — {entry.action}
+                        </Typography>
+                        <br />
+                        <Typography variant="caption">
+                          {new Date(entry.timestamp).toLocaleString()}
+                        </Typography>
+                        <br />
+                        <Typography variant="caption">{entry.reason}</Typography>
+                      </Box>
+                    }
+                  >
+                    <Box
+                      sx={{
+                        width: 20,
+                        height: 20,
+                        borderRadius: '50%',
+                        bgcolor: entry.action === 'emergency_stop' ? 'error.main' : 'success.main',
+                        border: '2px solid',
+                        borderColor: 'background.paper',
+                        ml: i === 0 ? 0 : '8px',
+                        flexShrink: 0,
+                        cursor: 'pointer',
+                      }}
+                    />
+                  </Tooltip>
+                ))}
+              </Box>
+              {/* Timeline labels */}
+              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                <Typography variant="caption" color="text.secondary">
+                  7 days ago
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Now
+                </Typography>
+              </Box>
+            </Box>
+          </Paper>
+        </>
+      )}
+
+      {/* C4: History with filters */}
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+        <Typography variant="h5">
+          Action History
+          {history && (
+            <Chip label={`${history.total} actions`} size="small" sx={{ ml: 1 }} />
+          )}
+        </Typography>
+        <FormControl size="small" sx={{ minWidth: 150 }}>
+          <InputLabel>Dimension</InputLabel>
+          <Select
+            value={historyDimension}
+            label="Dimension"
+            onChange={(e) => { setHistoryDimension(e.target.value); setHistoryPage(0); }}
+          >
+            <MenuItem value="">All</MenuItem>
+            <MenuItem value="signal">Signal</MenuItem>
+            <MenuItem value="train">Train</MenuItem>
+            <MenuItem value="deploy">Deploy</MenuItem>
+          </Select>
+        </FormControl>
+      </Box>
       <TableContainer component={Paper}>
         <Table size="small">
           <TableHead>
@@ -216,8 +393,12 @@ export function PMGatePage() {
           <TableBody>
             {history?.history.map((entry) => (
               <TableRow key={entry.action_id}>
-                <TableCell>{entry.action_id}</TableCell>
-                <TableCell>{entry.dimension}</TableCell>
+                <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                  {entry.action_id.slice(0, 8)}...
+                </TableCell>
+                <TableCell>
+                  <Chip label={entry.dimension} size="small" variant="outlined" />
+                </TableCell>
                 <TableCell>
                   <Chip
                     label={entry.action}
@@ -226,8 +407,14 @@ export function PMGatePage() {
                   />
                 </TableCell>
                 <TableCell>{entry.triggered_by}</TableCell>
-                <TableCell>{entry.reason}</TableCell>
-                <TableCell>{new Date(entry.timestamp).toLocaleString()}</TableCell>
+                <TableCell sx={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {entry.reason}
+                </TableCell>
+                <TableCell>
+                  <Tooltip title={new Date(entry.timestamp).toLocaleString()}>
+                    <Typography variant="body2">{relativeTime(entry.timestamp)}</Typography>
+                  </Tooltip>
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>

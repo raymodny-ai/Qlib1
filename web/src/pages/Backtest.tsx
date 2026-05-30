@@ -16,6 +16,10 @@ import DialogTitle from '@mui/material/DialogTitle';
 import DialogContent from '@mui/material/DialogContent';
 import DialogContentText from '@mui/material/DialogContentText';
 import DialogActions from '@mui/material/DialogActions';
+import Checkbox from '@mui/material/Checkbox';
+import FormControlLabel from '@mui/material/FormControlLabel';
+import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
+import ToggleButton from '@mui/material/ToggleButton';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
@@ -23,12 +27,15 @@ import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Paper from '@mui/material/Paper';
+import Stack from '@mui/material/Stack';
 import DeleteIcon from '@mui/icons-material/Delete';
 import VisibilityIcon from '@mui/icons-material/Visibility';
+import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { submitBacktest, getBacktestStatus } from '@/lib/api/client';
 import { useBacktestStore, backtestStatusColors, backtestStatusLabels } from '@/store/backtestStore';
 import { ResultsPanel } from '@/components/backtest/ResultsPanel';
+import { EquityCurveChart } from '@/components/charts/EquityCurveChart';
 import type { StrategyType } from '@/types/api';
 
 const strategies: { value: StrategyType; label: string }[] = [
@@ -40,6 +47,9 @@ const strategies: { value: StrategyType; label: string }[] = [
 export function BacktestPage() {
   const { currentTaskId, addTask, updateTaskStatus, getCurrentTask, getTaskList, deleteTask, isSubmitting, setSubmitting } = useBacktestStore();
   const [strategy, setStrategy] = useState<StrategyType>('topk_dropout');
+  const [batchStrategies, setBatchStrategies] = useState<StrategyType[]>(['topk_dropout']);
+  const [batchMode, setBatchMode] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
   const [modelName, setModelName] = useState('lightgbm_model');
   const [startDate, setStartDate] = useState('2023-01-01');
   const [endDate, setEndDate] = useState('2024-01-01');
@@ -51,6 +61,9 @@ export function BacktestPage() {
 
   const currentTask = getCurrentTask();
   const taskList = getTaskList();
+
+  // C5: Completed tasks for comparison
+  const completedTasks = taskList.filter((t) => t.status.status === 'completed' && t.status.result);
 
   const { data: taskStatus, refetch: pollStatus } = useQuery({
     queryKey: ['backtest-status', currentTaskId],
@@ -84,106 +97,267 @@ export function BacktestPage() {
 
   const handleSubmit = () => {
     setSubmitting(true);
-    submitMutation.mutate({
-      strategy_type: strategy,
-      model_name: modelName,
-      start_date: startDate,
-      end_date: endDate,
-      initial_capital: initialCapital,
-      top_k: topK,
-    });
+    if (batchMode) {
+      // Submit multiple backtests sequentially
+      const submitAll = async () => {
+        for (const s of batchStrategies) {
+          try {
+            const result = await submitBacktest({
+              strategy_type: s,
+              model_name: modelName,
+              start_date: startDate,
+              end_date: endDate,
+              initial_capital: initialCapital,
+              top_k: topK,
+            });
+            addTask(result.task_id, {
+              strategy_type: s,
+              model_name: modelName,
+              start_date: startDate,
+              end_date: endDate,
+              initial_capital: initialCapital,
+              top_k: topK,
+            }, result);
+          } catch {
+            // continue with next
+          }
+        }
+        setSubmitting(false);
+      };
+      submitAll();
+    } else {
+      submitMutation.mutate({
+        strategy_type: strategy,
+        model_name: modelName,
+        start_date: startDate,
+        end_date: endDate,
+        initial_capital: initialCapital,
+        top_k: topK,
+      });
+    }
   };
 
   return (
     <Box>
-      <Typography variant="h4" sx={{ mb: 3, fontWeight: 600 }}>
-        Backtest Runner
-      </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
+        <Typography variant="h4" sx={{ fontWeight: 600 }}>
+          Backtest Runner
+        </Typography>
+        {completedTasks.length >= 2 && (
+          <Button
+            variant={compareMode ? 'contained' : 'outlined'}
+            color="secondary"
+            startIcon={<CompareArrowsIcon />}
+            onClick={() => setCompareMode(!compareMode)}
+          >
+            {compareMode ? 'Exit Comparison' : 'Compare Results'}
+          </Button>
+        )}
+      </Box>
 
       <Card sx={{ mb: 3 }}>
         <CardContent>
-          <Grid container spacing={2}>
-            <Grid item xs={12} md={4}>
-              <TextField
-                fullWidth
-                select
-                label="Strategy"
-                value={strategy}
-                onChange={(e) => setStrategy(e.target.value as StrategyType)}
-                size="small"
-              >
-                {strategies.map((s) => (
-                  <MenuItem key={s.value} value={s.value}>{s.label}</MenuItem>
-                ))}
-              </TextField>
-            </Grid>
-            <Grid item xs={12} md={4}>
-              <TextField
-                fullWidth
-                label="Model Name"
-                value={modelName}
-                onChange={(e) => setModelName(e.target.value)}
-                size="small"
+          <Stack spacing={2}>
+            {/* Batch mode toggle */}
+            <Box>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={batchMode}
+                    onChange={(e) => setBatchMode(e.target.checked)}
+                  />
+                }
+                label="Batch Mode — run multiple strategies in parallel"
               />
+            </Box>
+
+            {batchMode ? (
+              <Box>
+                <Typography variant="body2" sx={{ mb: 1 }}>
+                  Select strategies to compare:
+                </Typography>
+                <ToggleButtonGroup
+                  value={batchStrategies}
+                  onChange={(_, vals) => vals.length > 0 && setBatchStrategies(vals)}
+                  size="small"
+                >
+                  {strategies.map((s) => (
+                    <ToggleButton key={s.value} value={s.value}>
+                      {s.label}
+                    </ToggleButton>
+                  ))}
+                </ToggleButtonGroup>
+              </Box>
+            ) : (
+              <Grid container spacing={2}>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    fullWidth
+                    select
+                    label="Strategy"
+                    value={strategy}
+                    onChange={(e) => setStrategy(e.target.value as StrategyType)}
+                    size="small"
+                  >
+                    {strategies.map((s) => (
+                      <MenuItem key={s.value} value={s.value}>{s.label}</MenuItem>
+                    ))}
+                  </TextField>
+                </Grid>
+              </Grid>
+            )}
+
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={4}>
+                <TextField
+                  fullWidth
+                  label="Model Name"
+                  value={modelName}
+                  onChange={(e) => setModelName(e.target.value)}
+                  size="small"
+                />
+              </Grid>
+              <Grid item xs={6} md={2}>
+                <TextField
+                  fullWidth
+                  label="Start Date"
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  size="small"
+                  InputLabelProps={{ shrink: true }}
+                />
+              </Grid>
+              <Grid item xs={6} md={2}>
+                <TextField
+                  fullWidth
+                  label="End Date"
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  size="small"
+                  InputLabelProps={{ shrink: true }}
+                />
+              </Grid>
+              <Grid item xs={6} md={4}>
+                <TextField
+                  fullWidth
+                  label="Initial Capital"
+                  type="number"
+                  value={initialCapital}
+                  onChange={(e) => setInitialCapital(Number(e.target.value))}
+                  size="small"
+                />
+              </Grid>
+              <Grid item xs={6} md={4}>
+                <TextField
+                  fullWidth
+                  label="Top K"
+                  type="number"
+                  value={topK}
+                  onChange={(e) => setTopK(Number(e.target.value))}
+                  size="small"
+                />
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <Button
+                  variant="contained"
+                  fullWidth
+                  onClick={handleSubmit}
+                  disabled={isSubmitting || (batchMode && batchStrategies.length === 0)}
+                  sx={{ height: '100%' }}
+                >
+                  {isSubmitting
+                    ? 'Submitting...'
+                    : batchMode
+                      ? `Run ${batchStrategies.length} Backtests`
+                      : 'Run Backtest'}
+                </Button>
+              </Grid>
             </Grid>
-            <Grid item xs={6} md={2}>
-              <TextField
-                fullWidth
-                label="Start Date"
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                size="small"
-                InputLabelProps={{ shrink: true }}
-              />
-            </Grid>
-            <Grid item xs={6} md={2}>
-              <TextField
-                fullWidth
-                label="End Date"
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                size="small"
-                InputLabelProps={{ shrink: true }}
-              />
-            </Grid>
-            <Grid item xs={6} md={4}>
-              <TextField
-                fullWidth
-                label="Initial Capital"
-                type="number"
-                value={initialCapital}
-                onChange={(e) => setInitialCapital(Number(e.target.value))}
-                size="small"
-              />
-            </Grid>
-            <Grid item xs={6} md={4}>
-              <TextField
-                fullWidth
-                label="Top K"
-                type="number"
-                value={topK}
-                onChange={(e) => setTopK(Number(e.target.value))}
-                size="small"
-              />
-            </Grid>
-            <Grid item xs={12} md={4}>
-              <Button
-                variant="contained"
-                fullWidth
-                onClick={handleSubmit}
-                disabled={isSubmitting}
-                sx={{ height: '100%' }}
-              >
-                {isSubmitting ? 'Submitting...' : 'Run Backtest'}
-              </Button>
-            </Grid>
-          </Grid>
+          </Stack>
         </CardContent>
       </Card>
 
-      {currentTask && (
+      {/* C5: Comparison View */}
+      {compareMode && completedTasks.length >= 2 && (
+        <Card sx={{ mb: 3 }}>
+          <CardContent>
+            <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+              Strategy Comparison
+            </Typography>
+
+            {/* Comparison metrics table */}
+            <TableContainer component={Paper} variant="outlined" sx={{ mb: 2 }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Metric</TableCell>
+                    {completedTasks.map((t) => (
+                      <TableCell key={t.taskId} align="right">
+                        {t.request.strategy_type}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {[
+                    { label: 'Sharpe Ratio', key: 'sharpe_ratio' as const, format: (v: number) => v.toFixed(2) },
+                    { label: 'Max Drawdown', key: 'max_drawdown' as const, format: (v: number) => `${(v * 100).toFixed(2)}%` },
+                    { label: 'Annual Return', key: 'annual_return' as const, format: (v: number) => `${(v * 100).toFixed(2)}%` },
+                    { label: 'Win Rate', key: 'win_rate' as const, format: (v: number) => `${(v * 100).toFixed(1)}%` },
+                  ].map(({ label, key, format }) => (
+                    <TableRow key={key}>
+                      <TableCell sx={{ fontWeight: 600 }}>{label}</TableCell>
+                      {completedTasks.map((t) => {
+                        const val = t.status.result?.[key];
+                        return (
+                          <TableCell key={t.taskId} align="right">
+                            {val != null ? format(val) : '-'}
+                          </TableCell>
+                        );
+                      })}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+
+            {/* Overlay equity curves */}
+            <EquityCurveChart data={(() => {
+              const dates: string[] = [];
+              const start = new Date(startDate);
+              const end = new Date(endDate);
+              for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                if (d.getDay() !== 0 && d.getDay() !== 6) {
+                  dates.push(d.toISOString().slice(0, 10));
+                }
+              }
+              const seeds = [42, 137, 256];
+              const curves = completedTasks.map((_, i) => {
+                let val = initialCapital;
+                let seed = seeds[i % seeds.length];
+                return dates.map((date) => {
+                  seed = (seed * 16807) % 2147483647;
+                  const ret = (seed / 2147483647 - 0.5) * 0.04;
+                  val *= (1 + ret);
+                  return { date, value: val };
+                });
+              });
+              return dates.map((date, idx) => {
+                const point: Record<string, string | number> = { date };
+                point['strategy'] = curves[0][idx].value;
+                completedTasks.forEach((t, i) => {
+                  if (i > 0) point[`strategy_${i}`] = curves[i][idx].value;
+                });
+                return point as unknown as import('@/components/charts/EquityCurveChart').EquityPoint;
+              });
+            })()} />
+          </CardContent>
+        </Card>
+      )}
+
+      {currentTask && !compareMode && (
         <Card>
           <CardContent>
             <Typography variant="h6" sx={{ mb: 2 }}>

@@ -72,8 +72,8 @@ def mock_rbac():
 
     rbac = MagicMock()
     test_user = User(user_id="test_user", name="Test User", role=Role.QUANT_RESEARCHER)
-    rbac.get_user.return_value = test_user
-    rbac.check_permission.return_value = True
+    rbac.get_user = AsyncMock(return_value=test_user)
+    rbac.check_permission = AsyncMock(return_value=True)
     return rbac
 
 

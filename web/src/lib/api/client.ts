@@ -32,6 +32,11 @@ import type {
   LogQueryParams,
   LogsResponse,
   LogStats,
+  DataSourceInfo,
+  DatasetInfo,
+  DataIngestRequest,
+  DataIngestResponse,
+  DataPreviewResponse,
 } from '@/types/api';
 
 // API Base URL from environment
@@ -382,6 +387,68 @@ export const generateSOXReport = async (
   const response = await apiClient.post<SOXReport>(
     '/api/v1/compliance/sox-report',
     request || {}
+  );
+  return response.data;
+};
+
+// ============ Data Management Endpoints (Sprint 3: F-060–F-063) ============
+
+/**
+ * List Data Sources
+ * Requires permission: experiment:read
+ */
+export const getDataSources = async (): Promise<DataSourceInfo[]> => {
+  const response = await apiClient.get<DataSourceInfo[]>('/api/v1/data/sources');
+  return response.data;
+};
+
+/**
+ * List Datasets
+ * Requires permission: experiment:read
+ */
+export const getDatasets = async (): Promise<DatasetInfo[]> => {
+  const response = await apiClient.get<DatasetInfo[]>('/api/v1/datasets');
+  return response.data;
+};
+
+/**
+ * Trigger Data Ingestion
+ * Requires permission: experiment:admin
+ */
+export const triggerDataIngest = async (
+  request: DataIngestRequest
+): Promise<DataIngestResponse> => {
+  const response = await apiClient.post<DataIngestResponse>('/api/v1/data/ingest', request);
+  return response.data;
+};
+
+/**
+ * Preview Dataset
+ * Requires permission: experiment:read
+ */
+export const previewDataset = async (
+  dataset: string,
+  params?: { limit?: number }
+): Promise<DataPreviewResponse> => {
+  const response = await apiClient.get<DataPreviewResponse>(
+    `/api/v1/data/preview/${dataset}`,
+    { params }
+  );
+  return response.data;
+};
+
+// ============ SOX Report Download (Sprint 3: F-050) ============
+
+/**
+ * Download SOX Report
+ * Requires permission: compliance:export
+ */
+export const downloadSOXReport = async (
+  params?: { quarter?: string }
+): Promise<SOXReport> => {
+  const response = await apiClient.get<SOXReport>(
+    '/api/v1/compliance/sox/download',
+    { params }
   );
   return response.data;
 };
