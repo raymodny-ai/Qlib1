@@ -21,6 +21,7 @@ import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Paper from '@mui/material/Paper';
+import TablePagination from '@mui/material/TablePagination';
 import FormControl from '@mui/material/FormControl';
 import InputLabel from '@mui/material/InputLabel';
 import Select from '@mui/material/Select';
@@ -42,6 +43,7 @@ import {
   globalEmergencyStop,
   globalEmergencyReopen,
 } from '@/lib/api/client';
+import { useWebSocket } from '@/hooks/useWebSocket';
 import type { GateDimension } from '@/types/api';
 
 export function PMGatePage() {
@@ -57,8 +59,9 @@ export function PMGatePage() {
 
   // C4: History filters & pagination
   const [historyDimension, setHistoryDimension] = useState<string>('');
+  const [historyAction, setHistoryAction] = useState<string>('');
   const [historyPage, setHistoryPage] = useState(0);
-  const historyLimit = 20;
+  const [historyLimit, setHistoryLimit] = useState(20);
 
   // C3: Notification toggle
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
@@ -74,11 +77,21 @@ export function PMGatePage() {
   const historyParams = useMemo(() => ({
     limit: historyLimit,
     dimension: historyDimension || undefined,
-  }), [historyLimit, historyDimension]);
+    action: historyAction || undefined,
+  }), [historyLimit, historyDimension, historyAction]);
 
   const { data: history } = useQuery({
     queryKey: ['gate-history', historyParams],
     queryFn: () => getGateHistory(historyParams),
+  });
+
+  // F-041: WebSocket live updates
+  useWebSocket({
+    channel: 'gate',
+    enabled: true,
+    onMessage: useCallback(() => {
+      queryClient.invalidateQueries({ queryKey: ['gate-status'] });
+    }, [queryClient]),
   });
 
   // C3: Browser notification when gate closes
@@ -357,26 +370,41 @@ export function PMGatePage() {
       )}
 
       {/* C4: History with filters */}
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2, flexWrap: 'wrap', gap: 1 }}>
         <Typography variant="h5">
           Action History
           {history && (
             <Chip label={`${history.total} actions`} size="small" sx={{ ml: 1 }} />
           )}
         </Typography>
-        <FormControl size="small" sx={{ minWidth: 150 }}>
-          <InputLabel>Dimension</InputLabel>
-          <Select
-            value={historyDimension}
-            label="Dimension"
-            onChange={(e) => { setHistoryDimension(e.target.value); setHistoryPage(0); }}
-          >
-            <MenuItem value="">All</MenuItem>
-            <MenuItem value="signal">Signal</MenuItem>
-            <MenuItem value="train">Train</MenuItem>
-            <MenuItem value="deploy">Deploy</MenuItem>
-          </Select>
-        </FormControl>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          {/* F-042: Action filter */}
+          <FormControl size="small" sx={{ minWidth: 130 }}>
+            <InputLabel>Action</InputLabel>
+            <Select
+              value={historyAction}
+              label="Action"
+              onChange={(e) => { setHistoryAction(e.target.value); setHistoryPage(0); }}
+            >
+              <MenuItem value="">All</MenuItem>
+              <MenuItem value="emergency_stop">Emergency Stop</MenuItem>
+              <MenuItem value="reopen">Reopen</MenuItem>
+            </Select>
+          </FormControl>
+          <FormControl size="small" sx={{ minWidth: 150 }}>
+            <InputLabel>Dimension</InputLabel>
+            <Select
+              value={historyDimension}
+              label="Dimension"
+              onChange={(e) => { setHistoryDimension(e.target.value); setHistoryPage(0); }}
+            >
+              <MenuItem value="">All</MenuItem>
+              <MenuItem value="signal">Signal</MenuItem>
+              <MenuItem value="train">Train</MenuItem>
+              <MenuItem value="deploy">Deploy</MenuItem>
+            </Select>
+          </FormControl>
+        </Box>
       </Box>
       <TableContainer component={Paper}>
         <Table size="small">
@@ -420,6 +448,22 @@ export function PMGatePage() {
           </TableBody>
         </Table>
       </TableContainer>
+
+      {/* F-042: History pagination */}
+      {history && (
+        <TablePagination
+          component="div"
+          count={history.total}
+          page={historyPage}
+          onPageChange={(_, page) => setHistoryPage(page)}
+          rowsPerPage={historyLimit}
+          onRowsPerPageChange={(e) => {
+            setHistoryLimit(parseInt(e.target.value, 10));
+            setHistoryPage(0);
+          }}
+          rowsPerPageOptions={[10, 20, 50, 100]}
+        />
+      )}
 
       {/* Stop Dialog */}
       <Dialog open={stopDialogOpen} onClose={() => { setStopDialogOpen(false); setConfirmedStop(false); }}>

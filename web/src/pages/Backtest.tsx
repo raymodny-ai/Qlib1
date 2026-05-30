@@ -7,6 +7,9 @@ import TextField from '@mui/material/TextField';
 import Button from '@mui/material/Button';
 import Grid from '@mui/material/Grid';
 import MenuItem from '@mui/material/MenuItem';
+import Select from '@mui/material/Select';
+import FormControl from '@mui/material/FormControl';
+import InputLabel from '@mui/material/InputLabel';
 import LinearProgress from '@mui/material/LinearProgress';
 import Alert from '@mui/material/Alert';
 import Chip from '@mui/material/Chip';
@@ -29,11 +32,13 @@ import TableRow from '@mui/material/TableRow';
 import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
 import DeleteIcon from '@mui/icons-material/Delete';
+import SaveAltIcon from '@mui/icons-material/SaveAlt';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { submitBacktest, getBacktestStatus } from '@/lib/api/client';
 import { useBacktestStore, backtestStatusColors, backtestStatusLabels } from '@/store/backtestStore';
+import type { BacktestTemplate } from '@/store/backtestStore';
 import { ResultsPanel } from '@/components/backtest/ResultsPanel';
 import { EquityCurveChart } from '@/components/charts/EquityCurveChart';
 import type { StrategyType } from '@/types/api';
@@ -45,7 +50,7 @@ const strategies: { value: StrategyType; label: string }[] = [
 ];
 
 export function BacktestPage() {
-  const { currentTaskId, addTask, updateTaskStatus, getCurrentTask, getTaskList, deleteTask, isSubmitting, setSubmitting } = useBacktestStore();
+  const { currentTaskId, addTask, updateTaskStatus, getCurrentTask, getTaskList, deleteTask, isSubmitting, setSubmitting, templates, saveTemplate, deleteTemplate } = useBacktestStore();
   const [strategy, setStrategy] = useState<StrategyType>('topk_dropout');
   const [batchStrategies, setBatchStrategies] = useState<StrategyType[]>(['topk_dropout']);
   const [batchMode, setBatchMode] = useState(false);
@@ -55,6 +60,9 @@ export function BacktestPage() {
   const [endDate, setEndDate] = useState('2024-01-01');
   const [initialCapital, setInitialCapital] = useState(1000000);
   const [topK, setTopK] = useState(50);
+  const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [templateNameInput, setTemplateNameInput] = useState('');
+  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
 
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
@@ -62,7 +70,34 @@ export function BacktestPage() {
   const currentTask = getCurrentTask();
   const taskList = getTaskList();
 
-  // C5: Completed tasks for comparison
+  const handleSaveTemplate = () => {
+    if (!templateNameInput.trim()) return;
+    saveTemplate({
+      name: templateNameInput.trim(),
+      strategy,
+      modelName,
+      startDate,
+      endDate,
+      initialCapital,
+      topK,
+    });
+    setTemplateDialogOpen(false);
+    setTemplateNameInput('');
+  };
+
+  const handleLoadTemplate = (name: string) => {
+    const tmpl = templates.find((t) => t.name === name);
+    if (!tmpl) return;
+    setSelectedTemplate(name);
+    setStrategy(tmpl.strategy);
+    setModelName(tmpl.modelName);
+    setStartDate(tmpl.startDate);
+    setEndDate(tmpl.endDate);
+    setInitialCapital(tmpl.initialCapital);
+    setTopK(tmpl.topK);
+  };
+
+  // F-032: Template presets
   const completedTasks = taskList.filter((t) => t.status.status === 'completed' && t.status.result);
 
   const { data: taskStatus, refetch: pollStatus } = useQuery({
@@ -158,6 +193,48 @@ export function BacktestPage() {
       <Card sx={{ mb: 3 }}>
         <CardContent>
           <Stack spacing={2}>
+            {/* F-032: Template presets */}
+            {templates.length > 0 && (
+              <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                <FormControl size="small" sx={{ minWidth: 180 }}>
+                  <InputLabel>Load Template</InputLabel>
+                  <Select
+                    value={selectedTemplate}
+                    label="Load Template"
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val) handleLoadTemplate(val);
+                    }}
+                  >
+                    <MenuItem value="">
+                      <em>None</em>
+                    </MenuItem>
+                    {templates.map((t) => (
+                      <MenuItem key={t.name} value={t.name}>{t.name}</MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                <Button
+                  size="small"
+                  startIcon={<SaveAltIcon />}
+                  onClick={() => setTemplateDialogOpen(true)}
+                >
+                  Save Preset
+                </Button>
+              </Box>
+            )}
+            {templates.length === 0 && (
+              <Box>
+                <Button
+                  size="small"
+                  startIcon={<SaveAltIcon />}
+                  onClick={() => setTemplateDialogOpen(true)}
+                >
+                  Save as Template
+                </Button>
+              </Box>
+            )}
+
             {/* Batch mode toggle */}
             <Box>
               <FormControlLabel
@@ -464,6 +541,34 @@ export function BacktestPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={templateDialogOpen} onClose={() => setTemplateDialogOpen(false)}>
+        <DialogTitle>Save Template Preset</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            Save current parameter configuration as a reusable template.
+          </DialogContentText>
+          <TextField
+            autoFocus
+            fullWidth
+            label="Template Name"
+            value={templateNameInput}
+            onChange={(e) => setTemplateNameInput(e.target.value)}
+            size="small"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTemplateDialogOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={handleSaveTemplate}
+            disabled={!templateNameInput.trim()}
+          >
+            Save
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Delete confirmation dialog */}
       <Dialog open={deleteConfirmOpen} onClose={() => setDeleteConfirmOpen(false)}>

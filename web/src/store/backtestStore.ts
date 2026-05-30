@@ -4,7 +4,7 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { BacktestStatus, BacktestRequest, BacktestResult } from '@/types/api';
+import type { BacktestStatus, BacktestRequest, BacktestResult, StrategyType } from '@/types/api';
 
 interface BacktestTask {
   taskId: string;
@@ -13,11 +13,22 @@ interface BacktestTask {
   submittedAt: string;
 }
 
+export interface BacktestTemplate {
+  name: string;
+  strategy: StrategyType;
+  modelName: string;
+  startDate: string;
+  endDate: string;
+  initialCapital: number;
+  topK: number;
+}
+
 interface BacktestState {
   tasks: Record<string, BacktestTask>;
   currentTaskId: string | null;
   isSubmitting: boolean;
   error: string | null;
+  templates: BacktestTemplate[];
 }
 
 interface BacktestActions {
@@ -31,6 +42,8 @@ interface BacktestActions {
   getCurrentTask: () => BacktestTask | undefined;
   getTaskList: () => BacktestTask[];
   deleteTask: (taskId: string) => void;
+  saveTemplate: (template: BacktestTemplate) => void;
+  deleteTemplate: (name: string) => void;
 }
 
 const initialState: BacktestState = {
@@ -38,6 +51,7 @@ const initialState: BacktestState = {
   currentTaskId: null,
   isSubmitting: false,
   error: null,
+  templates: [],
 };
 
 export const useBacktestStore = create<BacktestState & BacktestActions>()(
@@ -101,12 +115,26 @@ export const useBacktestStore = create<BacktestState & BacktestActions>()(
           };
         });
       },
+
+      saveTemplate: (template) => {
+        set((state) => {
+          const existing = state.templates.filter((t) => t.name !== template.name);
+          return { templates: [...existing, template] };
+        });
+      },
+
+      deleteTemplate: (name) => {
+        set((state) => ({
+          templates: state.templates.filter((t) => t.name !== name),
+        }));
+      },
     }),
     {
       name: 'qlib1-backtest-tasks',
       partialize: (state) => ({
         tasks: state.tasks,
         currentTaskId: state.currentTaskId,
+        templates: state.templates,
       }),
     }
   )

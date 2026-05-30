@@ -11,13 +11,20 @@ import TableCell from '@mui/material/TableCell';
 import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
+import TableSortLabel from '@mui/material/TableSortLabel';
+import TablePagination from '@mui/material/TablePagination';
 import Paper from '@mui/material/Paper';
 import ToggleButton from '@mui/material/ToggleButton';
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import MenuItem from '@mui/material/MenuItem';
 import Chip from '@mui/material/Chip';
 import Autocomplete from '@mui/material/Autocomplete';
+import IconButton from '@mui/material/IconButton';
+import Menu from '@mui/material/Menu';
+import Checkbox from '@mui/material/Checkbox';
+import FormControlLabel from '@mui/material/FormControlLabel';
 import DownloadIcon from '@mui/icons-material/Download';
+import ViewColumnIcon from '@mui/icons-material/ViewColumn';
 import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { queryFactors } from '@/lib/api/client';
@@ -38,6 +45,16 @@ export function FactorAnalysisPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [selectedInstrument, setSelectedInstrument] = useState('');
   const [selectedFactor, setSelectedFactor] = useState('');
+
+  // F-021: Pagination state
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(50);
+
+  // F-024: Column management
+  const [sortBy, setSortBy] = useState<string>('');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [columnMenuAnchor, setColumnMenuAnchor] = useState<null | HTMLElement>(null);
+  const [visibleColumns, setVisibleColumns] = useState<Set<string>>(new Set());
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['factors', dataset, instruments.join(','), startDate, endDate],
@@ -263,39 +280,133 @@ export function FactorAnalysisPage() {
           )}
 
           {/* Table view */}
-          {viewMode === 'table' && (
-            <>
-              <TableContainer component={Paper}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Instrument</TableCell>
-                      <TableCell>Date</TableCell>
-                      {factorNames.map((field) => (
-                        <TableCell key={field}>{field}</TableCell>
-                      ))}
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {data.data.slice(0, 50).map((row, idx) => (
-                      <TableRow key={idx}>
-                        <TableCell>{row.instrument}</TableCell>
-                        <TableCell>{row.date}</TableCell>
-                        {factorNames.map((field) => (
-                          <TableCell key={field}>
-                            {typeof row[field] === 'number' ? (row[field] as number).toFixed(4) : String(row[field])}
+          {viewMode === 'table' && (() => {
+            const allColumns = ['instrument', 'date', ...factorNames];
+            const activeColumns = visibleColumns.size > 0 ? allColumns.filter((c) => visibleColumns.has(c)) : allColumns;
+
+            // Sort
+            const sorted = sortBy
+              ? [...data.data].sort((a, b) => {
+                  const va = a[sortBy];
+                  const vb = b[sortBy];
+                  if (va == null && vb == null) return 0;
+                  if (va == null) return 1;
+                  if (vb == null) return -1;
+                  const dir = sortDir === 'asc' ? 1 : -1;
+                  return va < vb ? -dir : va > vb ? dir : 0;
+                })
+              : data.data;
+
+            // Paginate
+            const paged = sorted.slice(page * rowsPerPage, (page + 1) * rowsPerPage);
+
+            const handleSort = (col: string) => {
+              if (sortBy === col) {
+                setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+              } else {
+                setSortBy(col);
+                setSortDir('asc');
+              }
+              setPage(0);
+            };
+
+            const toggleColumn = (col: string) => {
+              setVisibleColumns((prev) => {
+                const next = new Set(prev);
+                if (next.has(col)) next.delete(col); else next.add(col);
+                return next;
+              });
+            };
+
+            return (
+              <>
+                {/* Column visibility control */}
+                <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 1 }}>
+                  <IconButton size="small" onClick={(e) => setColumnMenuAnchor(e.currentTarget)}>
+                    <ViewColumnIcon />
+                  </IconButton>
+                  <Menu
+                    anchorEl={columnMenuAnchor}
+                    open={Boolean(columnMenuAnchor)}
+                    onClose={() => setColumnMenuAnchor(null)}
+                  >
+                    {allColumns.map((col) => (
+                      <MenuItem key={col} dense>
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              size="small"
+                              checked={!visibleColumns.has(col)}
+                              onChange={() => toggleColumn(col)}
+                            />
+                          }
+                          label={col}
+                        />
+                      </MenuItem>
+                    ))}
+                  </Menu>
+                </Box>
+
+                <TableContainer component={Paper}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        {activeColumns.map((field) => (
+                          <TableCell
+                            key={field}
+                            sx={{
+                              ...(field === 'instrument' || field === 'date'
+                                ? { position: 'sticky', left: field === 'instrument' ? 0 : 120, zIndex: 2, bgcolor: 'background.paper' }
+                                : {}),
+                            }}
+                          >
+                            <TableSortLabel
+                              active={sortBy === field}
+                              direction={sortBy === field ? sortDir : 'asc'}
+                              onClick={() => handleSort(field)}
+                            >
+                              {field}
+                            </TableSortLabel>
                           </TableCell>
                         ))}
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-              <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-                Showing first 50 of {data.data.length} rows
-              </Typography>
-            </>
-          )}
+                    </TableHead>
+                    <TableBody>
+                      {paged.map((row, idx) => (
+                        <TableRow key={idx}>
+                          {activeColumns.map((field) => (
+                            <TableCell
+                              key={field}
+                              sx={{
+                                ...(field === 'instrument' || field === 'date'
+                                  ? { position: 'sticky', left: field === 'instrument' ? 0 : 120, zIndex: 1, bgcolor: 'background.paper' }
+                                  : {}),
+                              }}
+                            >
+                              {typeof row[field] === 'number' ? (row[field] as number).toFixed(4) : String(row[field] ?? '')}
+                            </TableCell>
+                          ))}
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+
+                <TablePagination
+                  component="div"
+                  count={data.data.length}
+                  page={page}
+                  onPageChange={(_, p) => setPage(p)}
+                  rowsPerPage={rowsPerPage}
+                  onRowsPerPageChange={(e) => {
+                    setRowsPerPage(parseInt(e.target.value, 10));
+                    setPage(0);
+                  }}
+                  rowsPerPageOptions={[10, 25, 50, 100]}
+                />
+              </>
+            );
+          })()}
         </>
       )}
     </Box>
