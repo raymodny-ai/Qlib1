@@ -1,6 +1,6 @@
 'use client';
 
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import Box from '@mui/material/Box';
 import List from '@mui/material/List';
 import ListItem from '@mui/material/ListItem';
@@ -19,6 +19,7 @@ import SecurityIcon from '@mui/icons-material/Security';
 import GavelIcon from '@mui/icons-material/Gavel';
 import SettingsIcon from '@mui/icons-material/Settings';
 import ArticleIcon from '@mui/icons-material/Article';
+import LockIcon from '@mui/icons-material/Lock';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import { useUIStore } from '@/store/uiStore';
@@ -50,6 +51,7 @@ const menuItems: MenuItem[] = [
 
 export function Sidebar() {
   const location = useLocation();
+  const navigate = useNavigate();
   const pathname = location.pathname;
   const { sidebarOpen, sidebarCollapsed, toggleSidebar, setSidebarCollapsed } = useUIStore();
   const { role } = useAuthStore();
@@ -107,13 +109,13 @@ export function Sidebar() {
       {/* Menu */}
       <List sx={{ flexGrow: 1, py: 1 }}>
         {filteredMenuItems.map((item) => {
-          const isActive = pathname === item.path;
+          const isActive = pathname === item.path || (item.path !== '/' && pathname.startsWith(item.path));
 
           const menuItem = (
             <ListItemButton
               key={item.path}
               selected={isActive}
-              onClick={() => {}}
+              onClick={() => navigate(item.path)}
               sx={{
                 minHeight: 48,
                 px: 2.5,
@@ -140,6 +142,11 @@ export function Sidebar() {
                   transition: 'opacity 0.3s',
                 }}
               />
+              {item.permission && !sidebarCollapsed && (
+                <Tooltip title="Permission Required">
+                  <LockIcon sx={{ fontSize: 14, color: 'rgba(255,255,255,0.4)', ml: 0.5 }} />
+                </Tooltip>
+              )}
             </ListItemButton>
           );
 

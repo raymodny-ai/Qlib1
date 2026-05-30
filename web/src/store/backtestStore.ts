@@ -3,12 +3,14 @@
  */
 
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type { BacktestStatus, BacktestRequest, BacktestResult } from '@/types/api';
 
 interface BacktestTask {
   taskId: string;
   request: BacktestRequest;
   status: BacktestStatus;
+  submittedAt: string;
 }
 
 interface BacktestState {
@@ -27,6 +29,8 @@ interface BacktestActions {
   clearError: () => void;
   getTask: (taskId: string) => BacktestTask | undefined;
   getCurrentTask: () => BacktestTask | undefined;
+  getTaskList: () => BacktestTask[];
+  deleteTask: (taskId: string) => void;
 }
 
 const initialState: BacktestState = {
@@ -36,46 +40,77 @@ const initialState: BacktestState = {
   error: null,
 };
 
-export const useBacktestStore = create<BacktestState & BacktestActions>()((set, get) => ({
-  ...initialState,
+export const useBacktestStore = create<BacktestState & BacktestActions>()(
+  persist(
+    (set, get) => ({
+      ...initialState,
 
-  addTask: (taskId, request, status) => {
-    set((state) => ({
-      tasks: {
-        ...state.tasks,
-        [taskId]: {
-          taskId,
-          request,
-          status,
-        },
+      addTask: (taskId, request, status) => {
+        set((state) => ({
+          tasks: {
+            ...state.tasks,
+            [taskId]: {
+              taskId,
+              request,
+              status,
+              submittedAt: new Date().toISOString(),
+            },
+          },
+          currentTaskId: taskId,
+        }));
       },
-      currentTaskId: taskId,
-    }));
-  },
 
-  updateTaskStatus: (taskId, status) => {
-    set((state) => ({
-      tasks: {
-        ...state.tasks,
-        [taskId]: {
-          ...state.tasks[taskId],
-          status,
-        },
+      updateTaskStatus: (taskId, status) => {
+        set((state) => {
+          const existing = state.tasks[taskId];
+          if (!existing) return state;
+          return {
+            tasks: {
+              ...state.tasks,
+              [taskId]: {
+                ...existing,
+                status,
+              },
+            },
+          };
+        });
       },
-    }));
-  },
 
-  setCurrentTask: (taskId) => set({ currentTaskId: taskId }),
-  setSubmitting: (isSubmitting) => set({ isSubmitting }),
-  setError: (error) => set({ error }),
-  clearError: () => set({ error: null }),
+      setCurrentTask: (taskId) => set({ currentTaskId: taskId }),
+      setSubmitting: (isSubmitting) => set({ isSubmitting }),
+      setError: (error) => set({ error }),
+      clearError: () => set({ error: null }),
 
-  getTask: (taskId) => get().tasks[taskId],
-  getCurrentTask: () => {
-    const { tasks, currentTaskId } = get();
-    return currentTaskId ? tasks[currentTaskId] : undefined;
-  },
-}));
+      getTask: (taskId) => get().tasks[taskId],
+      getCurrentTask: () => {
+        const { tasks, currentTaskId } = get();
+        return currentTaskId ? tasks[currentTaskId] : undefined;
+      },
+      getTaskList: () => {
+        const { tasks } = get();
+        return Object.values(tasks).sort(
+          (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+        );
+      },
+      deleteTask: (taskId) => {
+        set((state) => {
+          const { [taskId]: _, ...rest } = state.tasks;
+          return {
+            tasks: rest,
+            currentTaskId: state.currentTaskId === taskId ? null : state.currentTaskId,
+          };
+        });
+      },
+    }),
+    {
+      name: 'qlib1-backtest-tasks',
+      partialize: (state) => ({
+        tasks: state.tasks,
+        currentTaskId: state.currentTaskId,
+      }),
+    }
+  )
+);
 
 // Backtest status colors for UI
 export const backtestStatusColors: Record<BacktestStatus['status'], string> = {

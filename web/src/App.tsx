@@ -2,9 +2,10 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SnackbarProvider } from 'notistack';
 import { ThemeProvider, createTheme, CssBaseline } from '@mui/material';
-import { useState } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { AppShell } from '@/components/layout/AppShell';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { DashboardPage } from '@/pages/Dashboard';
 import { LoginPage } from '@/pages/Login';
 import { FactorAnalysisPage } from '@/pages/FactorAnalysis';
@@ -12,55 +13,77 @@ import { BacktestPage } from '@/pages/Backtest';
 import { PMGatePage } from '@/pages/PMGate';
 import { CompliancePage } from '@/pages/Compliance';
 import { DataManagementPage } from '@/pages/DataManagement';
+import { useUIStore } from '@/store/uiStore';
 
-const theme = createTheme({
-  palette: {
-    mode: 'light',
-    primary: {
-      main: '#0ea5e9',
-      light: '#38bdf8',
-      dark: '#0284c7',
-    },
-    secondary: {
-      main: '#64748b',
-    },
-    success: {
-      main: '#22c55e',
-    },
-    warning: {
-      main: '#f59e0b',
-    },
-    error: {
-      main: '#ef4444',
-    },
-    background: {
-      default: '#f8fafc',
-      paper: '#ffffff',
+const typography = {
+  fontFamily: 'Inter, system-ui, sans-serif',
+  h1: { fontSize: '2rem', fontWeight: 600 },
+  h2: { fontSize: '1.5rem', fontWeight: 600 },
+  h3: { fontSize: '1.25rem', fontWeight: 600 },
+  body1: { fontSize: '0.875rem' },
+  body2: { fontSize: '0.75rem' },
+} as const;
+
+const components = {
+  MuiButton: {
+    styleOverrides: {
+      root: { textTransform: 'none' as const },
     },
   },
-  typography: {
-    fontFamily: 'Inter, system-ui, sans-serif',
-    h1: { fontSize: '2rem', fontWeight: 600 },
-    h2: { fontSize: '1.5rem', fontWeight: 600 },
-    h3: { fontSize: '1.25rem', fontWeight: 600 },
-    body1: { fontSize: '0.875rem' },
-    body2: { fontSize: '0.75rem' },
+  MuiCard: {
+    styleOverrides: {
+      root: { boxShadow: '0 1px 3px 0 rgb(0 0 0 / 0.1)' },
+    },
   },
-  components: {
-    MuiButton: {
-      styleOverrides: {
-        root: { textTransform: 'none' },
+} as const;
+
+function createAppTheme(mode: 'light' | 'dark') {
+  return createTheme({
+    palette: {
+      mode,
+      primary: {
+        main: mode === 'light' ? '#0ea5e9' : '#38bdf8',
+        light: '#38bdf8',
+        dark: '#0284c7',
       },
-    },
-    MuiCard: {
-      styleOverrides: {
-        root: { boxShadow: '0 1px 3px 0 rgb(0 0 0 / 0.1)' },
+      secondary: {
+        main: '#64748b',
       },
+      success: { main: '#22c55e' },
+      warning: { main: '#f59e0b' },
+      error: { main: mode === 'light' ? '#ef4444' : '#f87171' },
+      background: mode === 'light'
+        ? { default: '#f8fafc', paper: '#ffffff' }
+        : { default: '#020617', paper: '#1e293b' },
     },
-  },
-});
+    typography,
+    components,
+  });
+}
+
+function useThemeMode(): 'light' | 'dark' {
+  const themeSetting = useUIStore((s) => s.theme);
+  const [systemPrefersDark, setSystemPrefersDark] = useState(
+    () => window.matchMedia('(prefers-color-scheme: dark)').matches
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = (e: MediaQueryListEvent) => setSystemPrefersDark(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+
+  if (themeSetting === 'system') {
+    return systemPrefersDark ? 'dark' : 'light';
+  }
+  return themeSetting === 'dark' ? 'dark' : 'light';
+}
 
 export function App() {
+  const mode = useThemeMode();
+  const theme = useMemo(() => createAppTheme(mode), [mode]);
+
   const [queryClient] = useState(
     () =>
       new QueryClient({
@@ -80,13 +103,13 @@ export function App() {
         <SnackbarProvider maxSnack={3} autoHideDuration={3000}>
           <BrowserRouter>
             <Routes>
-              <Route path="/login" element={<LoginPage />} />
+              <Route path="/login" element={<ErrorBoundary><LoginPage /></ErrorBoundary>} />
               <Route
                 path="/"
                 element={
                   <ProtectedRoute>
                     <AppShell>
-                      <DashboardPage />
+                      <ErrorBoundary><DashboardPage /></ErrorBoundary>
                     </AppShell>
                   </ProtectedRoute>
                 }
@@ -96,7 +119,7 @@ export function App() {
                 element={
                   <ProtectedRoute>
                     <AppShell>
-                      <FactorAnalysisPage />
+                      <ErrorBoundary><FactorAnalysisPage /></ErrorBoundary>
                     </AppShell>
                   </ProtectedRoute>
                 }
@@ -106,7 +129,7 @@ export function App() {
                 element={
                   <ProtectedRoute>
                     <AppShell>
-                      <BacktestPage />
+                      <ErrorBoundary><BacktestPage /></ErrorBoundary>
                     </AppShell>
                   </ProtectedRoute>
                 }
@@ -116,7 +139,7 @@ export function App() {
                 element={
                   <ProtectedRoute>
                     <AppShell>
-                      <PMGatePage />
+                      <ErrorBoundary><PMGatePage /></ErrorBoundary>
                     </AppShell>
                   </ProtectedRoute>
                 }
@@ -126,7 +149,7 @@ export function App() {
                 element={
                   <ProtectedRoute>
                     <AppShell>
-                      <CompliancePage />
+                      <ErrorBoundary><CompliancePage /></ErrorBoundary>
                     </AppShell>
                   </ProtectedRoute>
                 }
@@ -136,7 +159,7 @@ export function App() {
                 element={
                   <ProtectedRoute>
                     <AppShell>
-                      <DataManagementPage />
+                      <ErrorBoundary><DataManagementPage /></ErrorBoundary>
                     </AppShell>
                   </ProtectedRoute>
                 }

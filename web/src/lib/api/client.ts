@@ -68,33 +68,34 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError<ApiError>) => {
     const status = error.response?.status;
-    const detail = error.response?.data?.detail;
+    const detail = error.response?.data?.detail || 'Unknown error';
 
     switch (status) {
       case 401:
         console.error('[API] Unauthorized:', detail);
+        localStorage.removeItem('qlib1_user_id');
+        localStorage.removeItem('qlib1_token');
+        if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
+          window.location.href = '/login';
+        }
         break;
       case 403:
         console.error('[API] Forbidden:', detail);
-        break;
-      case 404:
-        console.error('[API] Not Found:', detail);
-        break;
-      case 409:
-        console.error('[API] Conflict:', detail);
-        break;
-      case 422:
-        console.error('[API] Validation Error:', detail);
-        break;
-      case 426:
-        console.error('[API] Upgrade Required (TLS):', detail);
-        break;
-      case 429:
-        console.error('[API] Rate Limited:', detail);
+        window.dispatchEvent(new CustomEvent('api-error', { detail: { status: 403, message: 'You do not have permission to perform this action.' } }));
         break;
       case 500:
         console.error('[API] Internal Server Error:', detail);
+        window.dispatchEvent(new CustomEvent('api-error', { detail: { status: 500, message: 'Service temporarily unavailable. Please try again later.' } }));
         break;
+      case 503:
+        console.error('[API] Service Unavailable:', detail);
+        window.dispatchEvent(new CustomEvent('api-error', { detail: { status: 503, message: 'Service temporarily unavailable. Please try again later.' } }));
+        break;
+      default:
+        if (status && status >= 400) {
+          console.error(`[API] Error ${status}:`, detail);
+          window.dispatchEvent(new CustomEvent('api-error', { detail: { status, message: typeof detail === 'string' ? detail : 'An unexpected error occurred.' } }));
+        }
     }
 
     return Promise.reject(error);

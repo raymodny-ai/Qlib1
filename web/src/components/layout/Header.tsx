@@ -3,6 +3,7 @@
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import IconButton from '@mui/material/IconButton';
+import Tooltip from '@mui/material/Tooltip';
 import Badge from '@mui/material/Badge';
 import Chip from '@mui/material/Chip';
 import MenuIcon from '@mui/icons-material/Menu';
@@ -14,13 +15,15 @@ import ListItemIcon from '@mui/material/ListItemIcon';
 import Divider from '@mui/material/Divider';
 import Select from '@mui/material/Select';
 import FormControl from '@mui/material/FormControl';
+import Brightness4Icon from '@mui/icons-material/Brightness4';
+import Brightness7Icon from '@mui/icons-material/Brightness7';
 import { useState } from 'react';
 import { useUIStore } from '@/store/uiStore';
 import { useAuthStore, roleLabels } from '@/store/authStore';
 import { useGateStore } from '@/store/gateStore';
 
 export function Header() {
-  const { toggleSidebar, health, healthError } = useUIStore();
+  const { toggleSidebar, health, healthError, theme, setTheme } = useUIStore();
   const { userId, role, logout } = useAuthStore();
   const { status: gateStatus } = useGateStore();
 
@@ -42,6 +45,8 @@ export function Header() {
 
   const isHealthy = health?.status === 'healthy';
   const isGateClosed = gateStatus?.is_any_closed ?? false;
+
+  const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
 
   return (
     <Box
@@ -74,6 +79,13 @@ export function Header() {
 
       {/* Spacer */}
       <Box sx={{ flexGrow: 1 }} />
+
+      {/* Theme toggle */}
+      <Tooltip title={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}>
+        <IconButton onClick={() => setTheme(isDark ? 'light' : 'dark')}>
+          {isDark ? <Brightness7Icon /> : <Brightness4Icon />}
+        </IconButton>
+      </Tooltip>
 
       {/* User role selector (dev mode) */}
       <FormControl size="small" sx={{ minWidth: 150 }}>

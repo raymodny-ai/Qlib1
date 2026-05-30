@@ -10,9 +10,25 @@ import MenuItem from '@mui/material/MenuItem';
 import LinearProgress from '@mui/material/LinearProgress';
 import Alert from '@mui/material/Alert';
 import Chip from '@mui/material/Chip';
+import IconButton from '@mui/material/IconButton';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogContentText from '@mui/material/DialogContentText';
+import DialogActions from '@mui/material/DialogActions';
+import Table from '@mui/material/Table';
+import TableBody from '@mui/material/TableBody';
+import TableCell from '@mui/material/TableCell';
+import TableContainer from '@mui/material/TableContainer';
+import TableHead from '@mui/material/TableHead';
+import TableRow from '@mui/material/TableRow';
+import Paper from '@mui/material/Paper';
+import DeleteIcon from '@mui/icons-material/Delete';
+import VisibilityIcon from '@mui/icons-material/Visibility';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { submitBacktest, getBacktestStatus } from '@/lib/api/client';
 import { useBacktestStore, backtestStatusColors, backtestStatusLabels } from '@/store/backtestStore';
+import { ResultsPanel } from '@/components/backtest/ResultsPanel';
 import type { StrategyType } from '@/types/api';
 
 const strategies: { value: StrategyType; label: string }[] = [
@@ -22,7 +38,7 @@ const strategies: { value: StrategyType; label: string }[] = [
 ];
 
 export function BacktestPage() {
-  const { currentTaskId, addTask, updateTaskStatus, getCurrentTask, isSubmitting, setSubmitting } = useBacktestStore();
+  const { currentTaskId, addTask, updateTaskStatus, getCurrentTask, getTaskList, deleteTask, isSubmitting, setSubmitting } = useBacktestStore();
   const [strategy, setStrategy] = useState<StrategyType>('topk_dropout');
   const [modelName, setModelName] = useState('lightgbm_model');
   const [startDate, setStartDate] = useState('2023-01-01');
@@ -30,7 +46,11 @@ export function BacktestPage() {
   const [initialCapital, setInitialCapital] = useState(1000000);
   const [topK, setTopK] = useState(50);
 
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+
   const currentTask = getCurrentTask();
+  const taskList = getTaskList();
 
   const { data: taskStatus, refetch: pollStatus } = useQuery({
     queryKey: ['backtest-status', currentTaskId],
@@ -185,22 +205,116 @@ export function BacktestPage() {
               <Alert severity="error">{currentTask.status.error}</Alert>
             )}
             {currentTask.status.result && (
-              <Grid container spacing={2}>
-                {Object.entries(currentTask.status.result).map(([key, value]) => (
-                  <Grid item xs={6} md={3} key={key}>
-                    <Typography variant="caption" color="text.secondary">
-                      {key.replace(/_/g, ' ')}
-                    </Typography>
-                    <Typography variant="h6">
-                      {typeof value === 'number' ? value.toFixed(4) : String(value)}
-                    </Typography>
-                  </Grid>
-                ))}
-              </Grid>
+              <ResultsPanel
+                result={currentTask.status}
+                startDate={startDate}
+                endDate={endDate}
+                initialCapital={initialCapital}
+              />
             )}
           </CardContent>
         </Card>
       )}
+
+      {/* Task History */}
+      {taskList.length > 0 && (
+        <Card>
+          <CardContent>
+            <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+              Task History
+            </Typography>
+            <TableContainer component={Paper} variant="outlined">
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Task ID</TableCell>
+                    <TableCell>Strategy</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Submitted</TableCell>
+                    <TableCell align="right">Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {taskList.map((task) => (
+                    <TableRow
+                      key={task.taskId}
+                      hover
+                      sx={{ cursor: 'pointer', bgcolor: task.taskId === currentTaskId ? 'action.selected' : 'inherit' }}
+                      onClick={() => {
+                        useBacktestStore.getState().setCurrentTask(task.taskId);
+                        if (task.status.status === 'running') {
+                          pollStatus();
+                        }
+                      }}
+                    >
+                      <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
+                        {task.taskId.slice(0, 12)}...
+                      </TableCell>
+                      <TableCell>{task.request.strategy_type}</TableCell>
+                      <TableCell>
+                        <Chip
+                          label={backtestStatusLabels[task.status.status]}
+                          sx={{ bgcolor: backtestStatusColors[task.status.status], color: '#fff' }}
+                          size="small"
+                        />
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12, color: 'text.secondary' }}>
+                        {new Date(task.submittedAt).toLocaleString()}
+                      </TableCell>
+                      <TableCell align="right">
+                        <IconButton
+                          size="small"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            useBacktestStore.getState().setCurrentTask(task.taskId);
+                          }}
+                        >
+                          <VisibilityIcon fontSize="small" />
+                        </IconButton>
+                        <IconButton
+                          size="small"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteTargetId(task.taskId);
+                            setDeleteConfirmOpen(true);
+                          }}
+                        >
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={deleteConfirmOpen} onClose={() => setDeleteConfirmOpen(false)}>
+        <DialogTitle>Delete Task</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Are you sure you want to delete task {deleteTargetId?.slice(0, 12)}...? This action cannot be undone.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteConfirmOpen(false)}>Cancel</Button>
+          <Button
+            color="error"
+            onClick={() => {
+              if (deleteTargetId) {
+                deleteTask(deleteTargetId);
+              }
+              setDeleteConfirmOpen(false);
+              setDeleteTargetId(null);
+            }}
+          >
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
