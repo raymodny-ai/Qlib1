@@ -30,6 +30,14 @@ python-dotenv>=1.0.0
 
 # ===== Security & Encryption =====
 cryptography>=42.0.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.9
+
+# ===== Database =====
+sqlalchemy[asyncio]>=2.0.0
+aiosqlite>=0.19.0
+alembic>=1.13.0
 
 # ===== CLI =====
 click>=8.1.0
@@ -57,6 +65,10 @@ lxml>=5.0.0
 # pytest>=8.0.0
 # pytest-cov>=4.0.0
 # pytest-asyncio>=0.23.0
+# respx>=0.20.0
+# aioresponses>=0.7.6
+# freezegun>=1.4.0
+# pytest-xdist>=3.5.0
 # black>=24.0.0
 # isort>=5.13.0
 # ruff>=0.2.0

@@ -86,8 +86,23 @@ except Exception as e:
 
 @app.on_event("startup")
 async def startup_event():
-    """应用启动: 预加载 DataServer 和已训练模型"""
+    """应用启动: 预加载 DataServer、初始化数据库、加载模型"""
     logger.info("Qlib API 服务启动中...")
+
+    # 初始化数据库
+    try:
+        from src.infrastructure.database import create_tables
+        await create_tables()
+        logger.info("数据库表已初始化")
+    except Exception as e:
+        logger.warning(f"数据库初始化失败: {e}")
+
+    # 初始化 DB-backed RBAC + 种子默认用户
+    try:
+        await get_rbac()
+    except Exception as e:
+        logger.warning(f"RBAC 初始化失败: {e}")
+
     try:
         ds = get_data_server()
         n_instruments = len(ds.registry.list_instruments())
@@ -153,24 +168,19 @@ def get_pit_manager():
     return _pit_manager
 
 
-# ===== RBAC 权限控制 (PRD 第6章) =====
+# ===== RBAC 权限控制 (DB-backed) =====
 _rbac_manager = None
 
 
-def get_rbac():
-    """获取 RBAC 管理器单例"""
+async def get_rbac():
+    """获取 DB-backed RBAC 管理器单例 (async)"""
     global _rbac_manager
     if _rbac_manager is None:
-        from src.security.security import RBACManager, AuditLogger
+        from src.security.security import DBRBACManager, AuditLogger
         audit = AuditLogger()
-        _rbac_manager = RBACManager(audit_logger=audit)
-        # 注册默认用户 (开发环境)
-        from src.security.security import User, Role
-        _rbac_manager.add_user(User(user_id="admin", name="System Admin", role=Role.SYSTEM_ADMIN))
-        _rbac_manager.add_user(User(user_id="researcher", name="Quant Researcher", role=Role.QUANT_RESEARCHER))
-        _rbac_manager.add_user(User(user_id="pm", name="Portfolio Manager", role=Role.PORTFOLIO_MANAGER))
-        _rbac_manager.add_user(User(user_id="auditor", name="Compliance Auditor", role=Role.COMPLIANCE_AUDITOR))
-        logger.info("RBAC 已初始化，默认用户已注册")
+        _rbac_manager = DBRBACManager(audit_logger=audit)
+        await _rbac_manager.initialize(seed_defaults=True)
+        logger.info("DB-Backed RBAC 已初始化")
     return _rbac_manager
 
 
@@ -178,25 +188,39 @@ async def get_current_user(request: Request) -> str:
     """
     FastAPI 依赖: 从请求头提取当前用户
 
-    优先级: X-User-ID > X-API-Key > query ?user= > 默认 'anonymous'
+    优先级: Authorization Bearer > X-User-ID > X-API-Key > query ?user= > 默认 'anonymous'
     """
+    # Try JWT Bearer token first
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        try:
+            from src.security.auth import decode_token
+            token = auth_header[7:]
+            payload = decode_token(token)
+            user_id = payload.get("sub", "anonymous")
+            rbac = await get_rbac()
+            user = await rbac.get_user(user_id)
+            if user and user.get("active"):
+                return user["user_id"]
+        except Exception:
+            pass  # Fall through to header-based auth
+
     user_id = request.headers.get("X-User-ID")
     if not user_id:
         user_id = request.headers.get("X-API-Key")
     if not user_id:
         user_id = request.query_params.get("user", "anonymous")
 
-    rbac = get_rbac()
-    user = rbac.get_user(user_id)
-    if user is None or not user.active:
-        # 开发环境放行，生产环境应拒绝
+    rbac = await get_rbac()
+    user = await rbac.get_user(user_id)
+    if user is None or not user.get("active"):
         return user_id
-    return user.user_id
+    return user["user_id"]
 
 
 def require_permission(permission: str):
     """
-    FastAPI 依赖工厂: 检查当前用户是否拥有指定权限
+    FastAPI 依赖工厂: 检查当前用户是否拥有指定权限 (async, DB-backed)
 
     用法:
         @app.post("/api/v1/backtest")
@@ -208,10 +232,10 @@ def require_permission(permission: str):
             ...
     """
     async def checker(user_id: str = Depends(get_current_user)) -> bool:
-        rbac = get_rbac()
-        if not rbac.check_permission(user_id, permission):
-            user = rbac.get_user(user_id)
-            role_str = user.role.value if user else "unknown"
+        rbac = await get_rbac()
+        if not await rbac.check_permission(user_id, permission):
+            user = await rbac.get_user(user_id)
+            role_str = user["role"] if user else "unknown"
             raise HTTPException(
                 status_code=403,
                 detail=f"权限拒绝: user={user_id}, role={role_str}, required={permission}",
@@ -649,6 +673,19 @@ async def run_backtest(
         "config": request.model_dump() if hasattr(request, "model_dump") else request.dict(),
     }
 
+    # WebSocket 通知: 任务开始
+    try:
+        from src.api.ws import get_ws_manager
+        ws = get_ws_manager()
+        await ws.broadcast("backtest", {
+            "type": "backtest_started",
+            "task_id": task_id,
+            "strategy": request.strategy_type,
+            "model": request.model_name,
+        })
+    except Exception:
+        pass
+
     # 同步执行回测 (生产环境应使用 Celery/Redis 任务队列)
     try:
         from src.analyzers.portfolio_strategy import (
@@ -749,6 +786,19 @@ async def run_backtest(
 
         # 异步卸载到线程池，避免阻塞事件循环
         loop = asyncio.get_event_loop()
+
+        # WebSocket 通知: 回测进行中
+        try:
+            from src.api.ws import get_ws_manager
+            ws_mgr = get_ws_manager()
+            await ws_mgr.broadcast("backtest", {
+                "type": "backtest_progress",
+                "task_id": task_id,
+                "progress": 0.5,
+            })
+        except Exception:
+            pass
+
         result = await loop.run_in_executor(None, simulator.run, predictions, prices)
 
         _backtest_tasks[task_id] = {
@@ -765,6 +815,18 @@ async def run_backtest(
                 "turnover": round(float(getattr(result, "turnover", 0)), 4),
             },
         }
+
+        # WebSocket 通知: 回测完成
+        try:
+            from src.api.ws import get_ws_manager
+            ws_mgr = get_ws_manager()
+            await ws_mgr.broadcast("backtest", {
+                "type": "backtest_completed",
+                "task_id": task_id,
+                "result": _backtest_tasks[task_id]["result"],
+            })
+        except Exception:
+            pass
 
     except Exception as e:
         _backtest_tasks[task_id] = {
@@ -869,12 +931,12 @@ async def get_report(
 _pm_gate = None
 
 
-def get_pm_gate():
-    """获取 PM Gate 控制器单例"""
+async def get_pm_gate():
+    """获取 PM Gate 控制器单例 (async)"""
     global _pm_gate
     if _pm_gate is None:
         from src.security.pm_gate import PMGateController
-        rbac = get_rbac()
+        rbac = await get_rbac()
         from src.security.security import AuditLogger
         audit = AuditLogger()
         _pm_gate = PMGateController(rbac=rbac, audit_logger=audit)
@@ -925,7 +987,7 @@ async def get_gate_status(user: str = Depends(get_current_user)):
     返回三个维度的门控状态、统计信息和历史记录。
     所有角色均可查看 (透明性原则)。
     """
-    gate = get_pm_gate()
+    gate = await get_pm_gate()
     stats = gate.get_stats()
 
     return GateStatusResponse(
@@ -954,7 +1016,7 @@ async def emergency_stop_gate(
         dimension: 门控维度 (signal=信号推送, train=模型训练, deploy=模型部署)
         reason: 熔断原因 (必填，用于审计追溯)
     """
-    gate = get_pm_gate()
+    gate = await get_pm_gate()
     try:
         action = gate.emergency_stop(
             user_id=user,
@@ -994,7 +1056,7 @@ async def emergency_reopen_gate(
         dimension: 门控维度
         reason: 恢复原因 (必填)
     """
-    gate = get_pm_gate()
+    gate = await get_pm_gate()
     try:
         action = gate.emergency_reopen(
             user_id=user,
@@ -1033,7 +1095,7 @@ async def global_emergency_stop(
     Args:
         reason: 全局熔断原因 (必填)
     """
-    gate = get_pm_gate()
+    gate = await get_pm_gate()
     try:
         actions = gate.global_emergency_stop(user_id=user, reason=request.reason)
         return [
@@ -1067,7 +1129,7 @@ async def global_emergency_reopen(
     Args:
         reason: 全局恢复原因 (必填)
     """
-    gate = get_pm_gate()
+    gate = await get_pm_gate()
     try:
         actions = gate.global_emergency_reopen(user_id=user, reason=request.reason)
         return [
@@ -1100,7 +1162,7 @@ async def get_gate_history(
 
     所有角色可查看操作记录 (透明原则)。
     """
-    gate = get_pm_gate()
+    gate = await get_pm_gate()
     history = gate.get_history(dimension=dimension, limit=limit)
     return {"total": len(history), "history": history}
 
@@ -1200,7 +1262,7 @@ async def generate_sox_report(
     from src.security.security import AuditLogger, RBACManager
     from src.security.compliance import SOXComplianceReporter
 
-    rbac = get_rbac()
+    rbac = await get_rbac()
     audit = AuditLogger()
 
     reporter = SOXComplianceReporter(
@@ -1227,7 +1289,7 @@ async def get_compliance_status(
     from src.security.security import AuditLogger
     from src.security.compliance import SOXComplianceReporter
 
-    rbac = get_rbac()
+    rbac = await get_rbac()
     audit = AuditLogger()
 
     reporter = SOXComplianceReporter(
@@ -1501,6 +1563,14 @@ async def export_logs(
 
 from fastapi.responses import StreamingResponse
 import io
+
+# 注册认证路由 (已禁用 OAuth2/SSO)
+# from src.api.routes.auth import router as auth_router
+# app.include_router(auth_router)
+
+# 注册 WebSocket 端点
+from src.api.ws import ws_monitor_endpoint
+app.websocket("/ws/monitor")(ws_monitor_endpoint)
 
 
 @app.get("/api/v1/logs/stream", tags=["Logs"])
@@ -1789,3 +1859,15 @@ async def export_audit_report(
         "path": path,
         "filters": {k: v for k, v in filters.items() if k != "limit"},
     }
+
+
+# ========================================================================
+#  Static Files (Production Frontend)
+# ========================================================================
+
+import os
+from fastapi.staticfiles import StaticFiles
+
+_STATIC_DIR = os.environ.get("STATIC_DIR", "./static")
+if os.path.isdir(_STATIC_DIR):
+    app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")

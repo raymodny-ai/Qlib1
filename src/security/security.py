@@ -1157,3 +1157,374 @@ class RBACManager:
                 resource=resource,
                 detail=detail or {},
             )
+
+
+# ============================================================================
+#  DB-Backed Audit Logger Extension
+# ============================================================================
+
+class DBAuditLogger(AuditLogger):
+    """
+    Audit logger that also persists entries to database.
+
+    Extends the file-based AuditLogger with SQLAlchemy async writes.
+    Each log entry is written to both JSONL file (for hash chain verification)
+    and the audit_logs database table (for query efficiency).
+    """
+
+    def __init__(
+        self,
+        log_dir: str = "logs/audit",
+        hmac_key: Optional[bytes] = None,
+    ):
+        super().__init__(log_dir=log_dir, hmac_key=hmac_key)
+        self._db_enabled = True
+
+    async def log_to_db(
+        self,
+        event_type: str,
+        user: str = "system",
+        role: str = "unknown",
+        action: str = "",
+        resource: str = "",
+        detail: Optional[Dict[str, Any]] = None,
+        ip_address: str = "",
+    ) -> None:
+        """Write audit entry to database (async)."""
+        try:
+            from src.infrastructure.database import get_async_session_factory
+            from src.infrastructure.models import AuditLogModel
+
+            session_factory = await get_async_session_factory()
+            async with session_factory() as session:
+                entry = AuditLogModel(
+                    event_type=event_type,
+                    user=user,
+                    role=role,
+                    action=action,
+                    resource=resource,
+                    detail=json.dumps(detail or {}),
+                    ip_address=ip_address,
+                )
+                session.add(entry)
+                await session.commit()
+        except Exception as e:
+            self._logger.warning(f"DB审计日志写入失败: {e}")
+
+
+# ============================================================================
+#  DB-Backed RBAC Manager
+# ============================================================================
+
+class DBRBACManager:
+    """
+    Database-backed RBAC Manager (async).
+
+    Replaces the in-memory RBACManager with SQLAlchemy-persisted
+    users, grants, and access requests.
+
+    Usage:
+        rbac = DBRBACManager(audit_logger=audit)
+        await rbac.initialize()  # create tables + seed default users
+        user = await rbac.get_user("admin")
+    """
+
+    def __init__(self, audit_logger: Optional[AuditLogger] = None):
+        self._audit_logger = audit_logger
+        self._logger = get_logger(__name__)
+
+    # ------------------------------------------------------------------
+    #  User Management
+    # ------------------------------------------------------------------
+
+    async def add_user(self, user_id: str, name: str, role: str,
+                       email: str = "", password_hash: str = "") -> None:
+        """Register a new user in database."""
+        from src.infrastructure.database import get_async_session_factory
+        from src.infrastructure.models import UserModel
+
+        session_factory = await get_async_session_factory()
+        async with session_factory() as session:
+            existing = await session.get(UserModel, user_id)
+            if existing:
+                existing.name = name
+                existing.role = role
+                existing.email = email
+                if password_hash:
+                    existing.password_hash = password_hash
+            else:
+                user = UserModel(
+                    user_id=user_id,
+                    name=name,
+                    role=role,
+                    email=email,
+                    password_hash=password_hash,
+                )
+                session.add(user)
+            await session.commit()
+
+        self._audit("user_registered", user_id, resource=f"user/{user_id}")
+
+    async def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve user from database."""
+        from src.infrastructure.database import get_async_session_factory
+        from src.infrastructure.models import UserModel
+
+        session_factory = await get_async_session_factory()
+        async with session_factory() as session:
+            user = await session.get(UserModel, user_id)
+            if user is None:
+                return None
+            return {
+                "user_id": user.user_id,
+                "name": user.name,
+                "role": user.role,
+                "email": user.email,
+                "password_hash": user.password_hash,
+                "active": user.active,
+                "created_at": user.created_at.isoformat() if user.created_at else "",
+            }
+
+    async def get_user_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Find user by name."""
+        from sqlalchemy import select
+        from src.infrastructure.database import get_async_session_factory
+        from src.infrastructure.models import UserModel
+
+        session_factory = await get_async_session_factory()
+        async with session_factory() as session:
+            result = await session.execute(
+                select(UserModel).where(UserModel.name == name)
+            )
+            user = result.scalar_one_or_none()
+            if user is None:
+                return None
+            return {
+                "user_id": user.user_id,
+                "name": user.name,
+                "role": user.role,
+                "email": user.email,
+                "password_hash": user.password_hash,
+                "active": user.active,
+            }
+
+    async def list_users(self) -> List[Dict[str, Any]]:
+        """List all users from database."""
+        from sqlalchemy import select
+        from src.infrastructure.database import get_async_session_factory
+        from src.infrastructure.models import UserModel
+
+        session_factory = await get_async_session_factory()
+        async with session_factory() as session:
+            result = await session.execute(select(UserModel))
+            users = result.scalars().all()
+            return [
+                {
+                    "user_id": u.user_id,
+                    "name": u.name,
+                    "role": u.role,
+                    "email": u.email,
+                    "active": u.active,
+                }
+                for u in users
+            ]
+
+    # ------------------------------------------------------------------
+    #  Permission Checking
+    # ------------------------------------------------------------------
+
+    async def check_permission(
+        self,
+        user_id: str,
+        required_permission: str,
+    ) -> bool:
+        """
+        Check if user has the required permission.
+
+        Uses the same role/permission definitions as the in-memory RBACManager.
+        """
+        user_data = await self.get_user(user_id)
+        if user_data is None or not user_data.get("active", True):
+            return False
+
+        try:
+            user_role = Role(user_data["role"])
+        except ValueError:
+            return False
+
+        perms = _get_role_permissions(user_role)
+
+        if "*" in perms:
+            return True
+
+        if required_permission in perms:
+            return True
+
+        resource, _, _ = required_permission.partition(":")
+        if f"{resource}:*" in perms:
+            return True
+
+        # Check temporary grants
+        if await self._check_temporary_grant(user_id, required_permission):
+            return True
+
+        return False
+
+    async def assert_permission(self, user_id: str, required_permission: str) -> None:
+        """Raise PermissionError if user lacks permission."""
+        if not await self.check_permission(user_id, required_permission):
+            user_data = await self.get_user(user_id)
+            role_str = user_data["role"] if user_data else "unknown"
+            raise PermissionError(
+                f"权限拒绝: user={user_id}, role={role_str}, "
+                f"required={required_permission}"
+            )
+
+    # ------------------------------------------------------------------
+    #  Temporary Grants
+    # ------------------------------------------------------------------
+
+    async def grant_temporary_permission(
+        self,
+        user_id: str,
+        permission: str,
+        granted_by: str,
+        duration_hours: int = 24,
+        max_uses: int = 1,
+        reason: str = "",
+    ) -> str:
+        """Grant temporary permission, returns grant_id."""
+        from datetime import timedelta
+        from src.infrastructure.database import get_async_session_factory
+        from src.infrastructure.models import AccessGrantModel
+
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=duration_hours)
+        grant_id = uuid.uuid4().hex[:12]
+
+        session_factory = await get_async_session_factory()
+        async with session_factory() as session:
+            grant = AccessGrantModel(
+                grant_id=grant_id,
+                user_id=user_id,
+                permission=permission,
+                granted_by=granted_by,
+                reason=reason,
+                expires_at=expires_at,
+                max_uses=max_uses,
+            )
+            session.add(grant)
+            await session.commit()
+
+        self._audit(
+            "temporary_grant", user_id, action="grant",
+            resource=f"permission/{permission}",
+            detail={"grant_id": grant_id, "granted_by": granted_by},
+        )
+        return grant_id
+
+    async def _check_temporary_grant(self, user_id: str, permission: str) -> bool:
+        """Check if user has a valid temporary grant for this permission."""
+        from sqlalchemy import select, and_
+        from src.infrastructure.database import get_async_session_factory
+        from src.infrastructure.models import AccessGrantModel
+
+        now = datetime.now(timezone.utc)
+        session_factory = await get_async_session_factory()
+        async with session_factory() as session:
+            result = await session.execute(
+                select(AccessGrantModel).where(
+                    and_(
+                        AccessGrantModel.user_id == user_id,
+                        AccessGrantModel.permission == permission,
+                        AccessGrantModel.is_active == True,
+                        (AccessGrantModel.expires_at > now) | (AccessGrantModel.expires_at.is_(None)),
+                    )
+                )
+            )
+            grants = result.scalars().all()
+            for grant in grants:
+                if grant.max_uses < 0 or grant.used_count < grant.max_uses:
+                    grant.used_count += 1
+                    await session.commit()
+                    return True
+        return False
+
+    # ------------------------------------------------------------------
+    #  Convenience Checks
+    # ------------------------------------------------------------------
+
+    async def can_push_signal(self, user_id: str) -> bool:
+        return await self.check_permission(user_id, "signal:approve")
+
+    async def can_train_model(self, user_id: str) -> bool:
+        return await self.check_permission(user_id, "model:train")
+
+    async def can_emergency_stop(self, user_id: str) -> bool:
+        return await self.check_permission(user_id, "signal:emergency_stop")
+
+    # ------------------------------------------------------------------
+    #  Initialization
+    # ------------------------------------------------------------------
+
+    async def initialize(self, seed_defaults: bool = True) -> None:
+        """Create tables and optionally seed default users."""
+        from src.infrastructure.database import create_tables
+        await create_tables()
+        if seed_defaults:
+            await self._seed_default_users()
+
+    async def _seed_default_users(self) -> None:
+        """Insert default users for development."""
+        defaults = [
+            ("admin", "System Admin", Role.SYSTEM_ADMIN.value),
+            ("researcher", "Quant Researcher", Role.QUANT_RESEARCHER.value),
+            ("pm", "Portfolio Manager", Role.PORTFOLIO_MANAGER.value),
+            ("auditor", "Compliance Auditor", Role.COMPLIANCE_AUDITOR.value),
+            ("data_admin", "Data Admin", Role.DATA_ADMIN.value),
+        ]
+        for user_id, name, role in defaults:
+            await self.add_user(user_id=user_id, name=name, role=role)
+        self._logger.info("默认用户已写入数据库")
+
+    # ------------------------------------------------------------------
+    #  Audit Helper
+    # ------------------------------------------------------------------
+
+    def _audit(
+        self,
+        event_type: str,
+        user: str = "system",
+        role: str = "unknown",
+        action: str = "",
+        resource: str = "",
+        detail: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if self._audit_logger:
+            self._audit_logger.log(
+                event_type=event_type,
+                user=user,
+                role=role,
+                action=action,
+                resource=resource,
+                detail=detail or {},
+            )
+
+
+# ------------------------------------------------------------------
+#  Helper: expand role to full permission set
+# ------------------------------------------------------------------
+
+def _get_role_permissions(role: Role) -> Set[str]:
+    """Expand a Role into its full permission set (base + finegrained + inheritance)."""
+    # Base permissions
+    perms: Set[str] = set(PERMISSIONS.get(role, set()))
+    # Finegrained permissions
+    for fp in FINEGRAINED_PERMISSIONS.get(role, set()):
+        if fp == "*":
+            perms.add("*")
+        else:
+            perms.add(fp)
+    # Role inheritance
+    for parent in ROLE_INHERITANCE.get(role, []):
+        perms |= _get_role_permissions(parent)
+    return perms

@@ -68,16 +68,32 @@ EXPOSE 8888 8000
 # Default: start Jupyter Lab
 CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
 
-# ===== Stage 4: Production Image (minimal) =====
+# ===== Stage 4: Frontend Build =====
+FROM node:20-alpine AS frontend-build
+
+WORKDIR /frontend
+
+# Copy package files and install dependencies
+COPY web/package.json web/package-lock.json* ./
+RUN npm install --legacy-peer-deps
+
+# Copy frontend source and build
+COPY web/ ./
+RUN npm run build
+
+# ===== Stage 5: Production Image (minimal) =====
 FROM dependencies AS production
 
 RUN groupadd -r quant && useradd -r -g quant -m -s /bin/bash quant \
-    && mkdir -p /app/data /app/models /app/logs \
+    && mkdir -p /app/data /app/models /app/logs /app/static \
     && chown -R quant:quant /app
 
 COPY --chown=quant:quant . .
 
+# Copy built frontend from Node.js stage
+COPY --from=frontend-build --chown=quant:quant /frontend/dist /app/static
+
 USER quant
 
-# Production: run FastAPI server
+# Production: run FastAPI server (serves API + static frontend)
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

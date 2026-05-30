@@ -31,6 +31,10 @@ services:
     env_file:
       - ../.env
 
+    depends_on:
+      postgres:
+        condition: service_healthy
+
     # GPU support (requires nvidia-container-toolkit)
     deploy:
       resources:
@@ -47,6 +51,28 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+
+  # ===== Web Dev Server (Vite) =====
+  web:
+    image: node:20-alpine
+    container_name: qlib-web
+    hostname: qlib-web
+    restart: unless-stopped
+    working_dir: /app/web
+
+    ports:
+      - "5173:5173"   # Vite dev server
+
+    volumes:
+      - ..:/app
+
+    command: ["sh", "-c", "npm install --legacy-peer-deps && npm run dev -- --host 0.0.0.0"]
+
+    environment:
+      - VITE_API_BASE_URL=http://api:8000
+
+    depends_on:
+      - api
 
   # ===== Production API Server =====
   api:
@@ -75,6 +101,10 @@ services:
 
     env_file:
       - ../.env
+
+    depends_on:
+      postgres:
+        condition: service_healthy
 
     deploy:
       resources:
@@ -119,6 +149,31 @@ services:
     # NO ports exposed — internal service only
     # NO GPU needed — data ingestion is CPU-bound
 
+  # ===== PostgreSQL Database =====
+  postgres:
+    image: postgres:16-alpine
+    container_name: qlib-postgres
+    hostname: qlib-postgres
+    restart: always
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+    environment:
+      POSTGRES_USER: qlib_user
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: qlib
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qlib_user -d qlib"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 # ===== Named Volumes =====
 volumes:
   dev-data:
@@ -133,3 +188,5 @@ volumes:
     name: qlib-prod-models
   prod-logs:
     name: qlib-prod-logs
+  pgdata:
+    name: qlib-pgdata
