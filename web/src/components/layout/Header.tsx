@@ -87,26 +87,28 @@ export function Header() {
         </IconButton>
       </Tooltip>
 
-      {/* User role selector (dev mode) */}
-      <FormControl size="small" sx={{ minWidth: 150 }}>
-        <Select
-          value={userId}
-          onChange={(e) => {
-            useAuthStore.getState().login(e.target.value);
-          }}
-          displayEmpty
-          startAdornment={
-            <ListItemIcon sx={{ minWidth: 32 }}>
-              <PersonIcon fontSize="small" />
-            </ListItemIcon>
-          }
-        >
-          <MenuItem value="admin">Admin</MenuItem>
-          <MenuItem value="researcher">Researcher</MenuItem>
-          <MenuItem value="pm">Portfolio Manager</MenuItem>
-          <MenuItem value="auditor">Auditor</MenuItem>
-        </Select>
-      </FormControl>
+      {/* User role selector (dev mode only) */}
+      {import.meta.env.DEV && (
+        <FormControl size="small" sx={{ minWidth: 150 }}>
+          <Select
+            value={userId}
+            onChange={(e) => {
+              useAuthStore.getState().login(e.target.value);
+            }}
+            displayEmpty
+            startAdornment={
+              <ListItemIcon sx={{ minWidth: 32 }}>
+                <PersonIcon fontSize="small" />
+              </ListItemIcon>
+            }
+          >
+            <MenuItem value="admin">Admin</MenuItem>
+            <MenuItem value="researcher">Researcher</MenuItem>
+            <MenuItem value="pm">Portfolio Manager</MenuItem>
+            <MenuItem value="auditor">Auditor</MenuItem>
+          </Select>
+        </FormControl>
+      )}
 
       {/* Notifications */}
       <IconButton onClick={handleNotificationClick}>

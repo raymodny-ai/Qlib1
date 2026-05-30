@@ -9,24 +9,41 @@ import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
 import ToggleButton from '@mui/material/ToggleButton';
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getHealth, getSystemMetrics, getGateStatus } from '@/lib/api/client';
 import { StatusCard } from '@/components/common/StatusCard';
 import { QuickStatsCard } from '@/components/dashboard/QuickStatsCard';
+import { EmptyState } from '@/components/common/EmptyState';
 
 type PollInterval = 10_000 | 30_000 | 60_000 | 0;
 
 export function DashboardPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [pollInterval, setPollInterval] = useState<PollInterval>(30_000);
+  const [healthTimedOut, setHealthTimedOut] = useState(false);
+  const healthTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const { data: health, isLoading: healthLoading } = useQuery({
+  const { data: health, isLoading: healthLoading, isError: healthError } = useQuery({
     queryKey: ['health'],
     queryFn: getHealth,
     refetchInterval: pollInterval || false,
   });
+
+  // Timeout detection: show EmptyState if health check exceeds 10s
+  useEffect(() => {
+    if (healthLoading && !health) {
+      healthTimerRef.current = setTimeout(() => setHealthTimedOut(true), 10_000);
+    } else {
+      if (healthTimerRef.current) clearTimeout(healthTimerRef.current);
+      setHealthTimedOut(false);
+    }
+    return () => {
+      if (healthTimerRef.current) clearTimeout(healthTimerRef.current);
+    };
+  }, [healthLoading, health]);
 
   const { data: metrics } = useQuery({
     queryKey: ['metrics'],
@@ -83,6 +100,34 @@ export function DashboardPage() {
         </ToggleButtonGroup>
       </Box>
 
+      {/* Timeout / Error state */}
+      {healthTimedOut && !health && (
+        <EmptyState
+          title="Connection Timeout"
+          description="Unable to reach the server after 10 seconds. The backend service may be starting up or unavailable."
+          loading={healthLoading}
+          loadingText="Reconnecting..."
+          action={{
+            label: 'Retry Connection',
+            onClick: () => {
+              setHealthTimedOut(false);
+              queryClient.invalidateQueries({ queryKey: ['health'] });
+            },
+          }}
+        />
+      )}
+      {healthError && !health && !healthTimedOut && (
+        <EmptyState
+          title="Service Unavailable"
+          description="The backend service returned an error. Check that the API server is running."
+          action={{
+            label: 'Retry',
+            onClick: () => queryClient.invalidateQueries({ queryKey: ['health'] }),
+          }}
+        />
+      )}
+
+      {/* Main content — always render with skeletons when loading */}
       <Grid container spacing={3}>
         <Grid item xs={12} md={4}>
           <StatusCard
